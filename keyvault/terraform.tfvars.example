@@ -1,0 +1,31 @@
+# Example terraform.tfvars
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "00000000-0000-0000-0000-000000000000"
+
+location = "southeastasia"
+project  = "sitecore-aks"
+env      = "test"
+
+extra_tags = {
+  owner = "mumu"
+}
+
+# Networking
+vnet_cidr           = "10.50.0.0/16"
+subnet_bastion_cidr = "10.50.0.0/26"
+subnet_vm_cidr      = "10.50.1.0/24"
+
+# Windows jumpbox sizing
+vm_size           = "Standard_D8s_v5"
+vm_instance_count = 1
+
+os_disk_size_gb   = 256
+data_disk_size_gb = 256
+
+admin_username = "azureuser"
+
+# ✅ Best practice: DO NOT commit passwords
+# Provide this via pipeline secret or local tfvars ignored by git
+# admin_password = "Replace-With-Secure-Password"
+
+generate_admin_password = true
