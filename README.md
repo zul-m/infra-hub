@@ -24,9 +24,19 @@ Use this stack when you need:
 
 Path: `./keyvault`
 
+### `onprem`
+
+Use this stack when you need:
+
+- Single Windows Server 2022 VM with direct public IP access
+- RDP and WinRM HTTPS controlled via the Terraform runner's public IP plus optional extra CIDRs
+- Automated SQL Server 2022 and SSMS install via WSL-backed Ansible post-provisioning
+
+Path: `./onprem`
+
 ## Common Workflow
 
-From either stack directory:
+From any stack directory:
 
 ```powershell
 terraform init
