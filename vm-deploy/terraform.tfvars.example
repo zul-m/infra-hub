@@ -1,0 +1,30 @@
+# Copy this file to terraform.tfvars and fill in your values.
+prefix                 = "mumu"
+location               = "eastus"
+tenant_id              = "00000000-0000-0000-0000-000000000000"
+subscription_id        = "11111111-1111-1111-1111-111111111111"
+vm_size                = "Standard_D2s_v5"
+
+# OS image is mandatory and selected by deploy.ps1 (menu or -OsVersion).
+# deploy.ps1 injects vm_image_publisher / vm_image_offer / vm_image_sku / vm_image_version at runtime.
+
+vm_admin_username      = "azureadmin"
+vm_admin_password      = "ReplaceWithStrongPassword!123"
+auto_shutdown_time     = "2000"
+auto_shutdown_timezone = "UTC"
+ansible_playbook_path  = "./ansible/playbooks/applications.yml"
+
+# SQL Server (mixed mode authentication is always enabled)
+sql_admin_username     = "sqladmin"
+sql_admin_password     = "ReplaceWithStrongSqlSaPassword!123"
+
+# (Optional) Additional trusted source CIDRs allowed inbound for RDP (3389) and WinRM HTTPS (5986).
+# Your current public IP is fetched automatically at plan/apply time via api.ipify.org.
+# Only set this if you need to allow additional IPs beyond your own.
+# allowed_cidrs = ["ADDITIONAL_IP/32"]
+
+# (Optional) Network CIDRs. If omitted:
+# - VNet defaults to 10.20.0.0/16
+# - VM subnet is derived automatically as 10.20.1.0/24 from the VNet CIDR
+# vnet_cidr      = "10.20.0.0/16"
+# vm_subnet_cidr = "10.20.1.0/24"
