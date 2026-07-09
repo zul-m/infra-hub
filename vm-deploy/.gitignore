@@ -1,0 +1,23 @@
+# Terraform local state and caches
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Local override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform variable files containing secrets
+terraform.tfvars
+*.auto.tfvars
+
+# Terraform lock backup or plan artifacts
+*.tfplan
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
