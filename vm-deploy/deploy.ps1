@@ -75,6 +75,12 @@ function Ensure-AzLogin {
     Write-Host "  Azure CLI auth: sign-in successful." -ForegroundColor Green
 }
 
+function Ensure-TerraformInstalled {
+    if (-not (Get-Command terraform -ErrorAction SilentlyContinue)) {
+        throw "Terraform is not installed or not on PATH. Install it first: https://developer.hashicorp.com/terraform/downloads"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # OS image profiles
 # ---------------------------------------------------------------------------
@@ -204,16 +210,17 @@ if ($AutoApprove -and $Action -ne "plan") {
 # ---------------------------------------------------------------------------
 Push-Location $PSScriptRoot
 try {
+    Ensure-TerraformInstalled
     Ensure-AzLogin
 
     & terraform init -input=false
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "terraform init exited with code $LASTEXITCODE"
+        throw "terraform init exited with code $LASTEXITCODE"
     }
 
     & terraform @tfArgs
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "terraform $Action exited with code $LASTEXITCODE"
+        throw "terraform $Action exited with code $LASTEXITCODE"
     }
 } finally {
     Pop-Location

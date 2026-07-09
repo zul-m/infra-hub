@@ -3,9 +3,9 @@ data "http" "my_ip" {
 }
 
 locals {
-  date_suffix         = formatdate("MMDD", plantimestamp())
-  resource_prefix     = "${var.prefix}-${local.date_suffix}"
-  resource_group_name = "${var.prefix}-${local.date_suffix}"
+  name_suffix         = trimspace(var.resource_name_suffix)
+  resource_prefix     = "${var.prefix}-${local.name_suffix}"
+  resource_group_name = "${var.prefix}-${local.name_suffix}"
   my_ip               = jsondecode(data.http.my_ip.response_body).ip
   allowed_cidrs       = concat(["${local.my_ip}/32"], var.allowed_cidrs)
   vnet_cidr           = coalesce(var.vnet_cidr, "10.20.0.0/16")
@@ -101,7 +101,7 @@ resource "azurerm_windows_virtual_machine" "vm" {
 
   patch_mode                 = "AutomaticByOS"
   provision_vm_agent         = true
-  enable_automatic_updates   = true
+  automatic_updates_enabled  = true
   network_interface_ids      = [azurerm_network_interface.vm.id]
   allow_extension_operations = true
 
@@ -126,7 +126,7 @@ resource "azurerm_virtual_machine_extension" "winrm_https" {
   type_handler_version = "1.10"
 
   protected_settings = jsonencode({
-    commandToExecute = "powershell -ExecutionPolicy Unrestricted -Command \"$cert = New-SelfSignedCertificate -DnsName $env:COMPUTERNAME -CertStoreLocation Cert:\\LocalMachine\\My; New-Item -Path WSMan:\\LocalHost\\Listener -Transport HTTPS -Address * -CertificateThumbPrint $cert.Thumbprint -Force; netsh advfirewall firewall add rule name='WinRM HTTPS' dir=in action=allow protocol=TCP localport=5986 | Out-Null\""
+    commandToExecute = "powershell -ExecutionPolicy Unrestricted -Command \"$ErrorActionPreference = 'Stop'; $cert = New-SelfSignedCertificate -DnsName $env:COMPUTERNAME -CertStoreLocation Cert:\\LocalMachine\\My; if (-not $cert -or -not $cert.Thumbprint) { throw 'Failed to create WinRM certificate.' }; New-Item -Path WSMan:\\LocalHost\\Listener -Transport HTTPS -Address * -CertificateThumbPrint $cert.Thumbprint -Force; netsh advfirewall firewall add rule name='WinRM HTTPS' dir=in action=allow protocol=TCP localport=5986 | Out-Null\""
   })
 }
 
@@ -167,18 +167,42 @@ resource "terraform_data" "install_applications" {
       Write-Host "[install_applications] Installing Ansible collections..."
       Write-Host "[install_applications] Running playbook against ${self.input.target_ip}..."
 
-      $playbookArgs = "ansible_connection=winrm ansible_port=5986 ansible_winrm_transport=ntlm ansible_winrm_server_cert_validation=ignore ansible_user=$user ansible_password=$pass sql_admin_username=$sqlUser sql_admin_password=$sqlPass"
+      $extraVars = @{
+        ansible_connection                  = "winrm"
+        ansible_port                        = 5986
+        ansible_winrm_transport             = "ntlm"
+        ansible_winrm_server_cert_validation = "ignore"
+        ansible_user                        = $user
+        ansible_password                    = $pass
+        sql_admin_username                  = $sqlUser
+        sql_admin_password                  = $sqlPass
+      }
 
-      if ($IsLinux -or $IsMacOS) {
-        # GitHub Actions / Linux: run ansible directly (no WSL needed)
-        bash -c "ansible-galaxy collection install -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' -e '$playbookArgs'"
-      } else {
-        # Windows: invoke ansible via WSL
-        $cwd = (Get-Location).Path
-        $cwdForWsl = $cwd -replace '\\', '/'
-        $wslpath = (wsl wslpath -a "$cwdForWsl").Trim()
-        if (-not $wslpath) { throw "Failed to convert working directory to a WSL path" }
-        wsl bash -lc "cd '$wslpath' && ansible-galaxy collection install -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' -e '$playbookArgs'"
+      $extraVarsFile = [System.IO.Path]::GetTempFileName()
+      try {
+        $extraVars | ConvertTo-Json -Depth 5 -Compress | Set-Content -Path $extraVarsFile -Encoding utf8
+
+        if ($IsLinux -or $IsMacOS) {
+          # GitHub Actions / Linux: run ansible directly (no WSL needed)
+          bash -c "ansible-galaxy collection install -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsFile'"
+        } else {
+          # Windows: invoke ansible via WSL
+          icacls $extraVarsFile /inheritance:r /grant:r "$env:USERNAME:(R,W)" | Out-Null
+          $cwd = (Get-Location).Path
+          $cwdForWsl = $cwd -replace '\\', '/'
+          $wslpath = (wsl wslpath -a "$cwdForWsl").Trim()
+          if (-not $wslpath) { throw "Failed to convert working directory to a WSL path" }
+
+          $extraVarsForWsl = $extraVarsFile -replace '\\', '/'
+          $extraVarsWslPath = (wsl wslpath -a "$extraVarsForWsl").Trim()
+          if (-not $extraVarsWslPath) { throw "Failed to convert extra vars file path to a WSL path" }
+
+          wsl bash -lc "cd '$wslpath' && ansible-galaxy collection install -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsWslPath'"
+        }
+      } finally {
+        if (Test-Path $extraVarsFile) {
+          Remove-Item -Path $extraVarsFile -Force
+        }
       }
 
       Write-Host "============================================================"
@@ -197,6 +221,7 @@ resource "terraform_data" "install_applications" {
 
   depends_on = [
     azurerm_network_security_rule.allow_winrm,
+    azurerm_subnet_network_security_group_association.vm,
     azurerm_virtual_machine_extension.winrm_https,
   ]
 }

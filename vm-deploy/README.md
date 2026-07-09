@@ -52,6 +52,29 @@ Copy-Item terraform.tfvars.example terraform.tfvars
 
 ## Deploy
 
+Preferred option: use the `deploy.ps1` wrapper, which includes Azure login preflight, OS selection menu, and optional auto-approve flow.
+
+Interactive menu:
+
+```powershell
+.\deploy.ps1
+```
+
+Non-interactive apply example:
+
+```powershell
+.\deploy.ps1 -OsVersion win25 -Action apply -AutoApprove
+```
+
+You can also run plan/destroy non-interactively:
+
+```powershell
+.\deploy.ps1 -OsVersion win11 -Action plan
+.\deploy.ps1 -OsVersion win22 -Action destroy
+```
+
+Manual Terraform commands:
+
 ```powershell
 terraform init
 terraform plan
@@ -69,6 +92,6 @@ terraform apply
 
 ## Notes
 
-- Resource names are suffixed with current date in `MMDD` format.
+- Resource names use a stable suffix from `resource_name_suffix`.
 - NSG inbound access is intentionally restricted to the runner public IP plus `allowed_cidrs`.
 - Terraform triggers Ansible automatically during `apply` via `local-exec`.

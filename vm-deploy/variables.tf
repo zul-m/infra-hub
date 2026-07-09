@@ -4,6 +4,17 @@ variable "prefix" {
   default     = "mumu"
 }
 
+variable "resource_name_suffix" {
+  description = "Stable suffix appended to resource names to keep names consistent across plans"
+  type        = string
+  default     = "core"
+
+  validation {
+    condition     = length(trimspace(var.resource_name_suffix)) > 0
+    error_message = "resource_name_suffix must be a non-empty string."
+  }
+}
+
 variable "location" {
   description = "Azure region"
   type        = string
@@ -102,4 +113,9 @@ variable "sql_admin_password" {
   type        = string
   sensitive   = true
   default     = ""
+
+  validation {
+    condition     = length(trimspace(var.sql_admin_password)) > 0
+    error_message = "sql_admin_password must be set to a non-empty value for SQL Server mixed mode authentication."
+  }
 }
