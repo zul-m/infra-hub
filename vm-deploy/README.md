@@ -10,7 +10,7 @@ This Terraform stack deploys:
 - 1 static Standard Public IP attached to the VM NIC
 - Auto-shutdown on the VM with notifications disabled
 - WinRM HTTPS bootstrap on the VM via Custom Script Extension
-- Post-provision Ansible run to install applications from `ansible/playbooks/applications.yml`
+- Post-provision Ansible run to install applications from `ansible/playbooks/applications.yml`, including SQL Server tooling, Azure CLI, and Azure Storage Explorer
 
 ## Prerequisites
 

@@ -167,6 +167,18 @@ resource "terraform_data" "install_applications" {
       Write-Host "[install_applications] Installing Ansible collections..."
       Write-Host "[install_applications] Running playbook against ${self.input.target_ip}..."
 
+      function Invoke-CheckedNative {
+        param(
+          [scriptblock]$Script,
+          [string]$ErrorMessage
+        )
+
+        & $Script
+        if ($LASTEXITCODE -ne 0) {
+          throw "$ErrorMessage (exit code: $LASTEXITCODE)"
+        }
+      }
+
       $extraVars = @{
         ansible_connection                  = "winrm"
         ansible_port                        = 5986
@@ -184,20 +196,28 @@ resource "terraform_data" "install_applications" {
 
         if ($IsLinux -or $IsMacOS) {
           # GitHub Actions / Linux: run ansible directly (no WSL needed)
-          bash -c "ansible-galaxy collection install -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsFile'"
+          Invoke-CheckedNative -Script {
+            bash -lc "export ANSIBLE_GALAXY_IGNORE_CERTS=true; ansible-galaxy collection install --ignore-certs -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsFile'"
+          } -ErrorMessage "Ansible provisioning failed"
         } else {
           # Windows: invoke ansible via WSL
-          icacls $extraVarsFile /inheritance:r /grant:r "$env:USERNAME:(R,W)" | Out-Null
+          Invoke-CheckedNative -Script {
+            icacls $extraVarsFile /inheritance:r /grant:r "$($env:USERNAME):F"
+          } -ErrorMessage "Failed to secure temporary extra vars file"
           $cwd = (Get-Location).Path
           $cwdForWsl = $cwd -replace '\\', '/'
           $wslpath = (wsl wslpath -a "$cwdForWsl").Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Failed to convert working directory to a WSL path (exit code: $LASTEXITCODE)" }
           if (-not $wslpath) { throw "Failed to convert working directory to a WSL path" }
 
           $extraVarsForWsl = $extraVarsFile -replace '\\', '/'
           $extraVarsWslPath = (wsl wslpath -a "$extraVarsForWsl").Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Failed to convert extra vars file path to a WSL path (exit code: $LASTEXITCODE)" }
           if (-not $extraVarsWslPath) { throw "Failed to convert extra vars file path to a WSL path" }
 
-          wsl bash -lc "cd '$wslpath' && ansible-galaxy collection install -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsWslPath'"
+          Invoke-CheckedNative -Script {
+            wsl bash -lc "export ANSIBLE_GALAXY_IGNORE_CERTS=true; cd '$wslpath' && ansible-galaxy collection install --ignore-certs -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsWslPath'"
+          } -ErrorMessage "Ansible provisioning failed"
         }
       } finally {
         if (Test-Path $extraVarsFile) {
@@ -210,9 +230,9 @@ resource "terraform_data" "install_applications" {
     EOT
 
     environment = {
-      ANSIBLE_WIN_USER     = var.vm_admin_username
+      ANSIBLE_WIN_USER     = nonsensitive(var.vm_admin_username)
       ANSIBLE_WIN_PASSWORD = nonsensitive(var.vm_admin_password)
-      SQL_ADMIN_USERNAME   = var.sql_admin_username
+      SQL_ADMIN_USERNAME   = nonsensitive(var.sql_admin_username)
       SQL_ADMIN_PASSWORD   = nonsensitive(var.sql_admin_password)
     }
 
