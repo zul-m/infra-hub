@@ -195,7 +195,9 @@ function Test-AzVmQuotaAvailable {
 
     if ($familyQuotaKey) {
         $family = $usage | Where-Object { $_.value -eq $familyQuotaKey } | Select-Object -First 1
-        Assert-VcpuQuotaHeadroom -Usage $family -RequiredCores $requiredCores -QuotaLabel "family vCPU ($familyQuotaKey)"
+        if ($family) {
+            Assert-VcpuQuotaHeadroom -Usage $family -RequiredCores $requiredCores -QuotaLabel "family vCPU ($familyQuotaKey)"
+        }
     }
 
     Write-Host "  Preflight: quota is sufficient (needs $requiredCores vCPUs)." -ForegroundColor Green
