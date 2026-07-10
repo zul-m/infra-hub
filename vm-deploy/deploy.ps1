@@ -81,11 +81,131 @@ function Assert-TerraformInstalled {
     }
 }
 
+function Get-TfvarsQuotedValue {
+    param(
+        [string]$Key,
+        [string]$Guidance
+    )
+
+    $tfvarsPath = Join-Path $PSScriptRoot "terraform.tfvars"
+    if (-not (Test-Path $tfvarsPath)) {
+        throw "terraform.tfvars was not found at '$tfvarsPath'. This file must define $Key for preflight checks."
+    }
+
+    $escapedKey = [regex]::Escape($Key)
+    $pattern = '^\s*' + $escapedKey + '\s*=\s*"([^"]+)"\s*$'
+    $match = Select-String -Path $tfvarsPath -Pattern $pattern | Select-Object -First 1
+    if (-not $match) {
+        throw $Guidance
+    }
+
+    return $match.Matches[0].Groups[1].Value
+}
+
+function Get-TerraformLocation {
+    return Get-TfvarsQuotedValue -Key "location" -Guidance 'No location entry was found in terraform.tfvars. Add a line like: location = "southeastasia"'
+}
+
+function Get-TerraformVmSize {
+    return Get-TfvarsQuotedValue -Key "vm_size" -Guidance 'No vm_size entry was found in terraform.tfvars. Add a line like: vm_size = "Standard_D4s_v3"'
+}
+
+function Test-AzVmImageSkuAvailable {
+    param(
+        [hashtable]$Image,
+        [string]$Location,
+        [string]$Action
+    )
+
+    if ($Action -eq "destroy") {
+        return
+    }
+
+    Write-Host "  Preflight: validating image SKU '$($Image.sku)' in '$Location'..." -ForegroundColor Cyan
+
+    $skuNames = & az vm image list-skus --location $Location --publisher $Image.publisher --offer $Image.offer --query "[].name" --output tsv
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to query image SKUs from Azure CLI for location '$Location' (publisher '$($Image.publisher)', offer '$($Image.offer)')."
+    }
+
+    if (-not $skuNames -or ($skuNames -notcontains $Image.sku)) {
+        throw "Selected image SKU '$($Image.sku)' is not available in location '$Location' for publisher '$($Image.publisher)' and offer '$($Image.offer)'. Run: az vm image list-skus --location $Location --publisher $($Image.publisher) --offer $($Image.offer) --query [].name --output tsv"
+    }
+
+    Write-Host "  Preflight: image SKU is available." -ForegroundColor Green
+}
+
+function Assert-VcpuQuotaHeadroom {
+    param(
+        [pscustomobject]$Usage,
+        [int]$RequiredCores,
+        [string]$QuotaLabel
+    )
+
+    if (-not $Usage) {
+        throw "Quota entry '$QuotaLabel' was not found in Azure usage output."
+    }
+
+    $current = [int]$Usage.current
+    $limit = [int]$Usage.limit
+    $available = $limit - $current
+    if ($available -lt $RequiredCores) {
+        throw "Insufficient $QuotaLabel quota: required $RequiredCores vCPUs, available $available (current $current / limit $limit)."
+    }
+}
+
+function Test-AzVmQuotaAvailable {
+    param(
+        [string]$Location,
+        [string]$VmSize,
+        [string]$Action
+    )
+
+    if ($Action -eq "destroy") {
+        return
+    }
+
+    Write-Host "  Preflight: validating quota for VM size '$VmSize' in '$Location'..." -ForegroundColor Cyan
+
+    $skuInfoJson = & az vm list-skus --location $Location --size $VmSize --resource-type virtualMachines --query '[0].{name:name,family:family,vcpus:capabilities[?name==`"vCPUs`"].value | [0]}' --output json
+    if ($LASTEXITCODE -ne 0 -or -not $skuInfoJson) {
+        throw "Failed to query VM SKU metadata for '$VmSize' in '$Location'."
+    }
+
+    $skuInfo = $skuInfoJson | ConvertFrom-Json
+    if (-not $skuInfo -or -not $skuInfo.vcpus) {
+        throw "VM size '$VmSize' was not found in location '$Location'."
+    }
+
+    $requiredCores = [int]$skuInfo.vcpus
+    if ($requiredCores -le 0) {
+        throw "Could not determine required vCPUs for VM size '$VmSize'."
+    }
+
+    $familyQuotaKey = [string]$skuInfo.family
+    $usageQuery = "[?name.value=='cores' || name.value=='$familyQuotaKey'].{value:name.value,current:currentValue,limit:limit}"
+    $usageJson = & az vm list-usage --location $Location --query $usageQuery --output json
+    if ($LASTEXITCODE -ne 0 -or -not $usageJson) {
+        throw "Failed to query quota usage for location '$Location'."
+    }
+
+    $usage = $usageJson | ConvertFrom-Json
+    $regional = $usage | Where-Object { $_.value -eq "cores" } | Select-Object -First 1
+    Assert-VcpuQuotaHeadroom -Usage $regional -RequiredCores $requiredCores -QuotaLabel "regional vCPU"
+
+    if ($familyQuotaKey) {
+        $family = $usage | Where-Object { $_.value -eq $familyQuotaKey } | Select-Object -First 1
+        Assert-VcpuQuotaHeadroom -Usage $family -RequiredCores $requiredCores -QuotaLabel "family vCPU ($familyQuotaKey)"
+    }
+
+    Write-Host "  Preflight: quota is sufficient (needs $requiredCores vCPUs)." -ForegroundColor Green
+}
+
 # ---------------------------------------------------------------------------
 # OS image profiles
 # ---------------------------------------------------------------------------
 $Profiles = [ordered]@{
-    win11 = @{ label = "Windows 11 23H2 Pro  (win11-23h2-pro)";      publisher = "MicrosoftWindowsDesktop"; offer = "Windows-11";    sku = "win11-23h2-pro";        version = "latest" }
+    win11 = @{ label = "Windows 11 24H2 Pro  (win11-24h2-pro)";      publisher = "MicrosoftWindowsDesktop"; offer = "Windows-11";    sku = "win11-24h2-pro";        version = "latest" }
     win10 = @{ label = "Windows 10 22H2 Pro  (win10-22h2-pro-g2)";   publisher = "MicrosoftWindowsDesktop"; offer = "Windows-10";    sku = "win10-22h2-pro-g2";     version = "latest" }
     win19 = @{ label = "Windows Server 2019  (2019-datacenter-gensecond)"; publisher = "MicrosoftWindowsServer";  offer = "WindowsServer"; sku = "2019-datacenter-gensecond"; version = "latest" }
     win22 = @{ label = "Windows Server 2022  (2022-datacenter-g2)";  publisher = "MicrosoftWindowsServer";  offer = "WindowsServer"; sku = "2022-datacenter-g2";  version = "latest" }
@@ -212,6 +332,11 @@ Push-Location $PSScriptRoot
 try {
     Assert-TerraformInstalled
     Ensure-AzLogin
+
+    $location = Get-TerraformLocation
+    $vmSize = Get-TerraformVmSize
+    Test-AzVmImageSkuAvailable -Image $img -Location $location -Action $Action
+    Test-AzVmQuotaAvailable -Location $location -VmSize $vmSize -Action $Action
 
     & terraform init -input=false
     if ($LASTEXITCODE -ne 0) {

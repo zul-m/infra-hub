@@ -86,6 +86,16 @@
         state: present
         timeout: 2700
 
+    - name: Install Azure CLI
+      chocolatey.chocolatey.win_chocolatey:
+        name: azure-cli
+        state: present
+
+    - name: Install Azure Storage Explorer
+      chocolatey.chocolatey.win_chocolatey:
+        name: azurestorageexplorer
+        state: present
+
     - name: Install Notepad++
       chocolatey.chocolatey.win_chocolatey:
         name: notepadplusplus
@@ -114,6 +124,8 @@
           Host: {{ inventory_hostname }}
           SQL Server 2022: installed
           SQL Server Management Studio: installed
+          Azure CLI: installed
+          Azure Storage Explorer: installed
           Notepad++: installed
           NuGet provider: installed
           PowerShellGet: installed

@@ -55,7 +55,7 @@ variable "vm_image_offer" {
 }
 
 variable "vm_image_sku" {
-  description = "Azure VM image SKU (e.g. 2019-datacenter-gensecond, 2022-datacenter-g2, 2025-datacenter-g2, win10-22h2-pro-g2, win11-23h2-pro)"
+  description = "Azure VM image SKU (e.g. 2019-datacenter-gensecond, 2022-datacenter-g2, 2025-datacenter-g2, win10-22h2-pro-g2, win11-24h2-pro)"
   type        = string
 }
 
