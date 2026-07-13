@@ -205,13 +205,11 @@ resource "terraform_data" "install_applications" {
             icacls $extraVarsFile /inheritance:r /grant:r "$($env:USERNAME):F"
           } -ErrorMessage "Failed to secure temporary extra vars file"
           $cwd = (Get-Location).Path
-          $cwdForWsl = $cwd -replace '\\', '/'
-          $wslpath = (wsl wslpath -a "$cwdForWsl").Trim()
+          $wslpath = (wsl wslpath -a "$cwd").Trim()
           if ($LASTEXITCODE -ne 0) { throw "Failed to convert working directory to a WSL path (exit code: $LASTEXITCODE)" }
           if (-not $wslpath) { throw "Failed to convert working directory to a WSL path" }
 
-          $extraVarsForWsl = $extraVarsFile -replace '\\', '/'
-          $extraVarsWslPath = (wsl wslpath -a "$extraVarsForWsl").Trim()
+          $extraVarsWslPath = (wsl wslpath -a "$extraVarsFile").Trim()
           if ($LASTEXITCODE -ne 0) { throw "Failed to convert extra vars file path to a WSL path (exit code: $LASTEXITCODE)" }
           if (-not $extraVarsWslPath) { throw "Failed to convert extra vars file path to a WSL path" }
 

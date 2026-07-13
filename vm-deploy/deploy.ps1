@@ -12,6 +12,9 @@
 .PARAMETER Action
     Terraform action: plan | apply | destroy
 
+.PARAMETER VmSize
+    VM size: Standard_D4s_v3 | Standard_D8s_v3
+
 .PARAMETER AutoApprove
     Skip the Terraform confirmation prompt.
 
@@ -19,6 +22,8 @@
     .\deploy.ps1                                          # full interactive menu
     .\deploy.ps1 -OsVersion win25                        # skips OS menu only
     .\deploy.ps1 -OsVersion win11 -Action plan
+    .\deploy.ps1 -OsVersion win25 -Action apply -VmSize Standard_D4s_v3
+    .\deploy.ps1 -OsVersion win25 -Action apply -VmSize Standard_D8s_v3
     .\deploy.ps1 -OsVersion win25 -Action apply -AutoApprove
 #>
 [CmdletBinding()]
@@ -28,6 +33,9 @@ param(
 
     [ValidateSet("plan", "apply", "destroy")]
     [string]$Action,
+
+    [ValidateSet("Standard_D4s_v3", "Standard_D8s_v3")]
+    [string]$VmSize,
 
     [switch]$AutoApprove
 )
@@ -104,10 +112,6 @@ function Get-TfvarsQuotedValue {
 
 function Get-TerraformLocation {
     return Get-TfvarsQuotedValue -Key "location" -Guidance 'No location entry was found in terraform.tfvars. Add a line like: location = "southeastasia"'
-}
-
-function Get-TerraformVmSize {
-    return Get-TfvarsQuotedValue -Key "vm_size" -Guidance 'No vm_size entry was found in terraform.tfvars. Add a line like: vm_size = "Standard_D4s_v3"'
 }
 
 function Test-AzVmImageSkuAvailable {
@@ -224,7 +228,7 @@ function Select-Option {
         [int]      $Default = 0
     )
 
-    $idx = $Default
+    $idx = if ($Default -ge 0 -and $Default -lt $Options.Count) { $Default } else { -1 }
     # Total lines the menu occupies: blank + prompt + blank + options + blank + footer
     $menuLines = $Options.Count + 5
     $esc = [char]27
@@ -255,9 +259,26 @@ function Select-Option {
 
         $key = [Console]::ReadKey($true)
         switch ($key.Key) {
-            UpArrow   { if ($idx -gt 0)                { $idx-- } }
-            DownArrow { if ($idx -lt $Options.Count-1) { $idx++ } }
-            Enter     { Write-Host ""; return $Options[$idx] }
+            UpArrow {
+                if ($idx -eq -1) {
+                    $idx = 0
+                } elseif ($idx -gt 0) {
+                    $idx--
+                }
+            }
+            DownArrow {
+                if ($idx -eq -1) {
+                    $idx = 0
+                } elseif ($idx -lt $Options.Count-1) {
+                    $idx++
+                }
+            }
+            Enter {
+                if ($idx -ge 0) {
+                    Write-Host ""
+                    return $Options[$idx]
+                }
+            }
             Escape    { Write-Host "`n  Cancelled.`n"; exit 0 }
         }
     }
@@ -284,6 +305,15 @@ if (-not $Action) {
     $Action = Select-Option -Prompt "Select action:" -Options @("plan", "apply", "destroy") -Default 0
 }
 
+if (-not $VmSize -and $Action -ne "destroy") {
+    $vmSizeChoice = Select-Option -Prompt "Select VM size:" -Options @("D4s_v3  - Standard_D4s_v3", "D8s_v3  - Standard_D8s_v3") -Default -1
+    if ($vmSizeChoice -like "D8s_v3*") {
+        $VmSize = "Standard_D8s_v3"
+    } else {
+        $VmSize = "Standard_D4s_v3"
+    }
+}
+
 if (-not $AutoApprove -and $Action -ne "plan") {
     $choice      = Select-Option -Prompt "Auto-approve?" -Options @("No  - pause and review before applying", "Yes - apply immediately") -Default 0
     $AutoApprove = $choice -like "Yes*"
@@ -300,6 +330,7 @@ Write-Host "  |              Summary                 |" -ForegroundColor DarkGra
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
 Write-Host ("  |  OS           : {0,-22}|" -f $OsVersion)     -ForegroundColor White
 Write-Host ("  |  SKU          : {0,-22}|" -f $img.sku)        -ForegroundColor White
+Write-Host ("  |  VM size      : {0,-22}|" -f $VmSize)         -ForegroundColor White
 Write-Host ("  |  Action       : {0,-22}|" -f $Action)         -ForegroundColor White
 Write-Host ("  |  Auto-approve : {0,-22}|" -f ([string]$AutoApprove)) -ForegroundColor White
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
@@ -323,6 +354,10 @@ $tfArgs = @(
     "-var", "vm_image_version=$($img.version)"
 )
 
+if ($VmSize) {
+    $tfArgs += @("-var", "vm_size=$VmSize")
+}
+
 if ($AutoApprove -and $Action -ne "plan") {
     $tfArgs += "-auto-approve"
 }
@@ -336,9 +371,8 @@ try {
     Ensure-AzLogin
 
     $location = Get-TerraformLocation
-    $vmSize = Get-TerraformVmSize
     Test-AzVmImageSkuAvailable -Image $img -Location $location -Action $Action
-    Test-AzVmQuotaAvailable -Location $location -VmSize $vmSize -Action $Action
+    Test-AzVmQuotaAvailable -Location $location -VmSize $VmSize -Action $Action
 
     & terraform init -input=false
     if ($LASTEXITCODE -ne 0) {
