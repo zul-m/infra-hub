@@ -52,7 +52,7 @@ Copy-Item terraform.tfvars.example terraform.tfvars
 
 ## Deploy
 
-Preferred option: use the `deploy.ps1` wrapper, which includes Azure login preflight, OS selection menu, and optional auto-approve flow.
+Preferred option: use the `deploy.ps1` wrapper, which includes Azure login preflight, OS selection menu, VM size selection, and optional auto-approve flow.
 
 Interactive menu:
 
@@ -63,8 +63,20 @@ Interactive menu:
 Non-interactive apply example:
 
 ```powershell
-.\deploy.ps1 -OsVersion win25 -Action apply -AutoApprove
+.\deploy.ps1 -OsVersion win25 -Action apply -VmSize Standard_D4s_v3 -AutoApprove
 ```
+
+Non-interactive apply using D8s_v3:
+
+```powershell
+.\deploy.ps1 -OsVersion win25 -Action apply -VmSize Standard_D8s_v3 -AutoApprove
+```
+
+VM size behavior:
+
+- `deploy.ps1` always uses an explicit VM size choice
+- Interactive mode prompts you to choose either D4s_v3 or D8s_v3 (no preselected default)
+- Non-interactive mode must pass `-VmSize Standard_D4s_v3` or `-VmSize Standard_D8s_v3`
 
 You can also run plan/destroy non-interactively:
 
