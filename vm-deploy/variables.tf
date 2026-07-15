@@ -5,7 +5,7 @@ variable "prefix" {
 }
 
 variable "resource_name_suffix" {
-  description = "Optional override for resource-name suffix. If null/empty, Terraform derives it from vm_image_sku (for example, 2022 or 10)."
+  description = "Optional override for resource-name suffix. Only null triggers the auto-derived suffix from vm_image_sku (for example, 2022 or 10); empty and whitespace-only strings are invalid per validation."
   type        = string
   default     = null
   nullable    = true
