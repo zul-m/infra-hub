@@ -16,6 +16,7 @@ terraform.tfvars
 *.auto.tfvars
 
 # Terraform lock backup or plan artifacts
+.terraform.lock.hcl
 *.tfplan
 
 # OS/editor noise
