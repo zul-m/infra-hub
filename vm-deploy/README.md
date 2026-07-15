@@ -104,6 +104,7 @@ terraform apply
 
 ## Notes
 
-- Resource names use a stable suffix from `resource_name_suffix`.
+- Resource names default to a suffix derived from `vm_image_sku` (for example, `mumu22`, `mumu10`, `mumu11`, `mumu25`).
+- Set `resource_name_suffix` only when you want to override the auto-derived suffix.
 - NSG inbound access is intentionally restricted to the runner public IP plus `allowed_cidrs`.
 - Terraform triggers Ansible automatically during `apply` via `local-exec`.

@@ -3,9 +3,11 @@ data "http" "my_ip" {
 }
 
 locals {
-  name_suffix         = trimspace(var.resource_name_suffix)
-  resource_prefix     = "${var.prefix}-${local.name_suffix}"
-  resource_group_name = "${var.prefix}-${local.name_suffix}"
+  sku_first_token     = split("-", lower(var.vm_image_sku))[0]
+  auto_name_suffix    = startswith(local.sku_first_token, "win") ? trimprefix(local.sku_first_token, "win") : substr(local.sku_first_token, 2, 2)
+  name_suffix         = var.resource_name_suffix != null && length(trimspace(var.resource_name_suffix)) > 0 ? trimspace(var.resource_name_suffix) : local.auto_name_suffix
+  resource_prefix     = "${var.prefix}${local.name_suffix}"
+  resource_group_name = "${var.prefix}${local.name_suffix}"
   my_ip               = jsondecode(data.http.my_ip.response_body).ip
   allowed_cidrs       = concat(["${local.my_ip}/32"], var.allowed_cidrs)
   vnet_cidr           = coalesce(var.vnet_cidr, "10.20.0.0/16")
@@ -204,12 +206,12 @@ resource "terraform_data" "install_applications" {
           Invoke-CheckedNative -Script {
             icacls $extraVarsFile /inheritance:r /grant:r "$($env:USERNAME):F"
           } -ErrorMessage "Failed to secure temporary extra vars file"
-          $cwd = (Get-Location).Path
+          $cwd = (Get-Location).Path -replace '\\', '/'
           $wslpath = (wsl wslpath -a "$cwd").Trim()
           if ($LASTEXITCODE -ne 0) { throw "Failed to convert working directory to a WSL path (exit code: $LASTEXITCODE)" }
           if (-not $wslpath) { throw "Failed to convert working directory to a WSL path" }
 
-          $extraVarsWslPath = (wsl wslpath -a "$extraVarsFile").Trim()
+          $extraVarsWslPath = (wsl wslpath -a "$($extraVarsFile -replace '\\', '/')").Trim()
           if ($LASTEXITCODE -ne 0) { throw "Failed to convert extra vars file path to a WSL path (exit code: $LASTEXITCODE)" }
           if (-not $extraVarsWslPath) { throw "Failed to convert extra vars file path to a WSL path" }
 

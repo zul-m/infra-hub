@@ -1,0 +1,64 @@
+name: Copilot PR Review
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - synchronize
+
+concurrency:
+  group: copilot-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  copilot-requests: write
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout base repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Build PR review context
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/build-pr-context.mjs > pr-context.json
+
+      - name: Generate review findings with Copilot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_MODEL: gpt-5.2
+        run: >-
+          copilot -s --no-ask-user
+          --allow-tool='read(.github/prompts/copilot-pr-review.txt),read(pr-context.json),write(review.json)'
+          -p "Read .github/prompts/copilot-pr-review.txt and pr-context.json, then follow the prompt file exactly and write the final JSON object to review.json."
+
+      - name: Post inline review comments
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/post-pr-review.mjs
+
+      - name: Publish review summary
+        if: always()
+        run: |
+          if [ -f review-summary.md ]; then
+            cat review-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -5,13 +5,14 @@ variable "prefix" {
 }
 
 variable "resource_name_suffix" {
-  description = "Stable suffix appended to resource names to keep names consistent across plans"
+  description = "Optional override for resource-name suffix. Only null triggers the auto-derived suffix from vm_image_sku (for example, 2022 or 10); empty and whitespace-only strings are invalid per validation."
   type        = string
-  default     = "core"
+  default     = null
+  nullable    = true
 
   validation {
-    condition     = length(trimspace(var.resource_name_suffix)) > 0
-    error_message = "resource_name_suffix must be a non-empty string."
+    condition     = var.resource_name_suffix == null || length(trimspace(var.resource_name_suffix)) > 0
+    error_message = "resource_name_suffix must be null or a non-empty string."
   }
 }
 
