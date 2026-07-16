@@ -211,6 +211,10 @@ if ($AksRegistryServer -and $AksRegistryUsername -and $AksRegistryPassword) {
     throw "AksRegistryServer, AksRegistryUsername, and AksRegistryPassword must all be set together."
 }
 
+if ($Action -eq "apply" -and $AksWindowsNodeCount -gt 0) {
+    Ensure-NonEmpty -Value $AksWindowsAdminPassword -Name "AksWindowsAdminPassword (required when AksWindowsNodeCount > 0)"
+}
+
 Write-Host ""
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
 Write-Host "  |              Summary                 |" -ForegroundColor DarkGray
