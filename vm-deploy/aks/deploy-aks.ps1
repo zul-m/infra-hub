@@ -276,8 +276,8 @@ if ($PSBoundParameters.ContainsKey("AksLogAnalyticsWorkspaceName")) {
     $terraformArgs += @("-var", "log_analytics_workspace_name=$AksLogAnalyticsWorkspaceName")
 }
 
-if ($createRegistrySecret -or $PSBoundParameters.ContainsKey("AksRegistryServer") -or $PSBoundParameters.ContainsKey("AksRegistryUsername") -or $PSBoundParameters.ContainsKey("AksRegistryPassword")) {
-    $terraformArgs += @("-var", "create_registry_secret=$($createRegistrySecret.ToString().ToLower())")
+if ($createRegistrySecret) {
+    $terraformArgs += @("-var", "create_registry_secret=true")
 }
 
 if ($PSBoundParameters.ContainsKey("AksRegistryServer")) {
