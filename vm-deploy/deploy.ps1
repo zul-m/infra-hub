@@ -115,12 +115,17 @@ Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
 Write-Host "  |         Infra  Deploy  Tool          |" -ForegroundColor Cyan
 Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
 
+$hasAksParams = @($PSBoundParameters.Keys | Where-Object { $_ -like "Aks*" }).Count -gt 0
+$hasVmParams = $PSBoundParameters.ContainsKey("OsVersion") -or $PSBoundParameters.ContainsKey("VmSize")
+
+if ($hasAksParams -and $hasVmParams) {
+    throw "Do not mix VM and AKS-specific parameters in one command. Use -Target vm with VM parameters or -Target aks with AKS parameters."
+}
+
 if (-not $Target) {
     if ($BootstrapAks) {
         $Target = "aks"
     } else {
-        $hasAksParams = @($PSBoundParameters.Keys | Where-Object { $_ -like "Aks*" }).Count -gt 0
-        $hasVmParams = $PSBoundParameters.ContainsKey("OsVersion") -or $PSBoundParameters.ContainsKey("VmSize")
         if ($hasAksParams) {
             $Target = "aks"
         } elseif ($hasVmParams) {
@@ -136,6 +141,14 @@ if (-not $Target) {
 
 $vmScript = Join-Path $PSScriptRoot "vm\deploy-vm.ps1"
 $aksScript = Join-Path $PSScriptRoot "aks\deploy-aks.ps1"
+
+if ($Target -eq "vm" -and $hasAksParams) {
+    throw "AKS-specific parameters were provided with -Target vm. Remove Aks* parameters or change target to aks."
+}
+
+if ($Target -eq "aks" -and $hasVmParams) {
+    throw "VM-specific parameters were provided with -Target aks. Remove VM parameters (OsVersion/VmSize) or change target to vm."
+}
 
 if ($Target -eq "vm") {
     if (-not (Test-Path $vmScript)) {
