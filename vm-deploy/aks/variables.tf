@@ -18,6 +18,17 @@ variable "kubernetes_version" {
   type        = string
 }
 
+variable "aks_sku_tier" {
+  description = "AKS SKU tier (Free, Standard, or Premium)"
+  type        = string
+  default     = "Free"
+
+  validation {
+    condition     = contains(["Free", "Standard", "Premium"], var.aks_sku_tier)
+    error_message = "aks_sku_tier must be one of: Free, Standard, Premium."
+  }
+}
+
 variable "linux_node_count" {
   description = "Linux system node pool count"
   type        = number

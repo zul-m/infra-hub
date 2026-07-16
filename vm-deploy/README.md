@@ -104,6 +104,17 @@ AKS apply with optional workspace override:
   -AksWindowsAdminPassword "<strong-password>"
 ```
 
+AKS apply with SKU tier override:
+
+```powershell
+.\deploy.ps1 -Target aks -Action apply -AutoApprove `
+  -AksResourceGroup mumu-aks `
+  -AksClusterName mumu-aks1361 `
+  -AksSkuTier Standard `
+  -AksWindowsAdminUsername mumu `
+  -AksWindowsAdminPassword "<strong-password>"
+```
+
 AKS apply with registry pull secret (managed by Terraform):
 
 ```powershell

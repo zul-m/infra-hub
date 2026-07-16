@@ -32,6 +32,8 @@ param(
     [string]$AksClusterName,
     [string]$AksLocation,
     [string]$AksKubernetesVersion,
+    [ValidateSet("Free", "Standard", "Premium")]
+    [string]$AksSkuTier,
     [string]$AksLogAnalyticsWorkspaceName,
     [int]$AksLinuxNodeCount,
     [string]$AksLinuxNodeVmSize,
@@ -184,6 +186,7 @@ if ($PSBoundParameters.ContainsKey("AksResourceGroup")) { $aksParams.AksResource
 if ($PSBoundParameters.ContainsKey("AksClusterName")) { $aksParams.AksClusterName = $AksClusterName }
 if ($PSBoundParameters.ContainsKey("AksLocation")) { $aksParams.AksLocation = $AksLocation }
 if ($PSBoundParameters.ContainsKey("AksKubernetesVersion")) { $aksParams.AksKubernetesVersion = $AksKubernetesVersion }
+if ($PSBoundParameters.ContainsKey("AksSkuTier")) { $aksParams.AksSkuTier = $AksSkuTier }
 if ($PSBoundParameters.ContainsKey("AksLogAnalyticsWorkspaceName")) { $aksParams.AksLogAnalyticsWorkspaceName = $AksLogAnalyticsWorkspaceName }
 if ($PSBoundParameters.ContainsKey("AksLinuxNodeCount")) { $aksParams.AksLinuxNodeCount = $AksLinuxNodeCount }
 if ($PSBoundParameters.ContainsKey("AksLinuxNodeVmSize")) { $aksParams.AksLinuxNodeVmSize = $AksLinuxNodeVmSize }

@@ -26,6 +26,9 @@ param(
 
     [string]$AksKubernetesVersion = "1.36.1",
 
+    [ValidateSet("Free", "Standard", "Premium")]
+    [string]$AksSkuTier = "Free",
+
     [int]$AksLinuxNodeCount = 1,
 
     [string]$AksLinuxNodeVmSize = "Standard_D4s_v3",
@@ -218,6 +221,7 @@ Write-Host ("  |  Auto-approve : {0,-22}|" -f ([string]$AutoApprove)) -Foregroun
 Write-Host ("  |  AKS RG       : {0,-22}|" -f $AksResourceGroup) -ForegroundColor White
 Write-Host ("  |  AKS cluster  : {0,-22}|" -f $AksClusterName) -ForegroundColor White
 Write-Host ("  |  K8s version  : {0,-22}|" -f $AksKubernetesVersion) -ForegroundColor White
+Write-Host ("  |  SKU tier     : {0,-22}|" -f $AksSkuTier) -ForegroundColor White
 Write-Host ("  |  Location     : {0,-22}|" -f $AksLocation) -ForegroundColor White
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
 Write-Host ""
@@ -250,6 +254,9 @@ if ($PSBoundParameters.ContainsKey("AksLocation")) {
 }
 if ($PSBoundParameters.ContainsKey("AksKubernetesVersion")) {
     $terraformArgs += @("-var", "kubernetes_version=$AksKubernetesVersion")
+}
+if ($PSBoundParameters.ContainsKey("AksSkuTier")) {
+    $terraformArgs += @("-var", "aks_sku_tier=$AksSkuTier")
 }
 if ($PSBoundParameters.ContainsKey("AksLinuxNodeCount")) {
     $terraformArgs += @("-var", "linux_node_count=$AksLinuxNodeCount")

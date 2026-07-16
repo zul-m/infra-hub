@@ -3,6 +3,7 @@ resource_group_name          = "mumu-aks"
 location                     = "southeastasia"
 cluster_name                 = "mumu-aks1361"
 kubernetes_version           = "1.36.1"
+aks_sku_tier                 = "Free"
 linux_node_count             = 1
 linux_node_vm_size           = "Standard_D4s_v3"
 windows_node_count           = 2
