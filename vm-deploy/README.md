@@ -1,110 +1,134 @@
-# VM Deploy
+# Infra Deploy
 
-Single Windows VM stack on Azure with direct RDP/WinRM access controlled by a caller-IP-aware CIDR allowlist.
+Deployment entrypoint with two separated targets under this folder:
 
-This Terraform stack deploys:
+- `vm/` for VM Terraform stack, tfvars, and Ansible provisioning
+- `aks/` for AKS Terraform stack and wrapper script
+- root `deploy.ps1` as a dispatcher
 
-- 1 Windows VM
-- 1 VNet and subnet for the VM
-- 1 NSG allowing inbound RDP (3389) and WinRM HTTPS (5986) from the Terraform runner's current public IP plus any extra configured CIDRs
-- 1 static Standard Public IP attached to the VM NIC
-- Auto-shutdown on the VM with notifications disabled
-- WinRM HTTPS bootstrap on the VM via Custom Script Extension
-- Post-provision Ansible run to install applications from `ansible/playbooks/applications.yml`, including SQL Server tooling, Azure CLI, and Azure Storage Explorer
+## Folder Layout
+
+```text
+vm-deploy/
+  deploy.ps1
+  .gitignore
+  vm/
+    deploy-vm.ps1
+    main.tf
+    variables.tf
+    outputs.tf
+    versions.tf
+    terraform.tfvars
+    terraform.tfvars.example
+    ansible/
+      requirements.yml
+      playbooks/applications.yml
+  aks/
+    deploy-aks.ps1
+    main.tf
+    variables.tf
+    outputs.tf
+    versions.tf
+    terraform.tfvars.example
+```
 
 ## Prerequisites
 
-- Terraform >= 1.5
 - Azure CLI logged in (`az login`)
-- Permission to create resource groups, networking, public IP, and VM resources
-- Outbound internet access from the machine running Terraform to reach `api.ipify.org`
-- WSL available on Windows hosts because post-provision Ansible is executed through `wsl bash -lc ...`
-- Ansible and Python available in your WSL environment
-- Network path from your runner/WSL environment to VM public IP on port 5986
-- WinRM Python dependency installed in WSL:
-
-```powershell
-pip install pywinrm
-```
+- For VM target:
+  - Terraform >= 1.5
+  - WSL available on Windows hosts (Ansible runs through WSL)
+  - Ansible and Python in WSL
+  - `pywinrm` installed in WSL
+- For AKS target:
+  - Terraform >= 1.5
+  - `kubectl` only if you want to manually inspect/use the cluster after deploy
 
 ## Configure
 
-1. Copy the example variable file:
+1. VM variables:
 
 ```powershell
-Copy-Item terraform.tfvars.example terraform.tfvars
+Copy-Item .\vm\terraform.tfvars.example .\vm\terraform.tfvars
 ```
 
-2. Edit `terraform.tfvars` and set required values:
+2. Edit `vm/terraform.tfvars` and set your values (`location`, subscription/tenant IDs, VM credentials, SQL credentials, etc).
 
-- `location`
-- `tenant_id`
-- `subscription_id`
-- VM image fields (`vm_image_publisher`, `vm_image_offer`, `vm_image_sku`, `vm_image_version`)
-- VM admin credentials (`vm_admin_username`, `vm_admin_password`)
-- SQL admin credentials (`sql_admin_username`, `sql_admin_password`)
+3. AKS variables:
 
-3. Optional values:
+```powershell
+Copy-Item .\aks\terraform.tfvars.example .\aks\terraform.tfvars
+```
 
-- `allowed_cidrs`: extra trusted CIDRs in addition to your detected public IP
-- `vnet_cidr` and `vm_subnet_cidr`: custom networking CIDRs
-- `ansible_playbook_path`: alternate Ansible playbook path
+Then edit `aks/terraform.tfvars` and use CLI flags only when you want one-off overrides.
 
-## Deploy
+## Deploy Via Root Script
 
-Preferred option: use the `deploy.ps1` wrapper, which includes Azure login preflight, OS selection menu, VM size selection, and optional auto-approve flow.
-
-Interactive menu:
+Interactive (choose `vm` or `aks` first):
 
 ```powershell
 .\deploy.ps1
 ```
 
-Non-interactive apply example:
+VM apply:
 
 ```powershell
-.\deploy.ps1 -OsVersion win25 -Action apply -VmSize Standard_D4s_v3 -AutoApprove
+.\deploy.ps1 -Target vm -OsVersion win25 -Action apply -VmSize Standard_D4s_v3 -AutoApprove
 ```
 
-Non-interactive apply using D8s_v3:
+VM plan/destroy:
 
 ```powershell
-.\deploy.ps1 -OsVersion win25 -Action apply -VmSize Standard_D8s_v3 -AutoApprove
+.\deploy.ps1 -Target vm -OsVersion win11 -Action plan
+.\deploy.ps1 -Target vm -OsVersion win22 -Action destroy
 ```
 
-VM size behavior:
-
-- `deploy.ps1` always uses an explicit VM size choice
-- Interactive mode prompts you to choose either D4s_v3 or D8s_v3 (no preselected default)
-- Non-interactive mode must pass `-VmSize Standard_D4s_v3` or `-VmSize Standard_D8s_v3`
-
-You can also run plan/destroy non-interactively:
+AKS apply:
 
 ```powershell
-.\deploy.ps1 -OsVersion win11 -Action plan
-.\deploy.ps1 -OsVersion win22 -Action destroy
+.\deploy.ps1 -Target aks -Action apply -AutoApprove `
+  -AksResourceGroup mumu-aks `
+  -AksClusterName mumu-aks1361 `
+  -AksWindowsAdminUsername mumu `
+  -AksWindowsAdminPassword "<strong-password>"
 ```
 
-Manual Terraform commands:
+AKS apply with optional workspace override:
 
 ```powershell
-terraform init
-terraform plan
-terraform apply
+.\deploy.ps1 -Target aks -Action apply -AutoApprove `
+  -AksResourceGroup mumu-aks `
+  -AksClusterName mumu-aks1361 `
+  -AksLogAnalyticsWorkspaceName mumu-aks1361-law `
+  -AksWindowsAdminUsername mumu `
+  -AksWindowsAdminPassword "<strong-password>"
 ```
 
-## Outputs
+AKS apply with registry pull secret (managed by Terraform):
 
-- `resource_group_name`
-- `vnet_name`
-- `vm_private_ip`
-- `vm_public_ip`
-- `rdp_target`
-- `vm_name`
+```powershell
+.\deploy.ps1 -Target aks -Action apply -AutoApprove `
+  -AksResourceGroup mumu-aks `
+  -AksClusterName mumu-aks1361 `
+  -AksWindowsAdminUsername mumu `
+  -AksWindowsAdminPassword "<strong-password>" `
+  -AksRegistryServer ideftdevacr.azurecr.io `
+  -AksRegistryUsername "<registry-username>" `
+  -AksRegistryPassword "<registry-password>" `
+  -AksRegistrySecretName sitecore-docker-registry
+```
+
+AKS destroy:
+
+```powershell
+.\deploy.ps1 -Target aks -Action destroy -AksResourceGroup mumu-aks -AksClusterName mumu-aks1361
+```
 
 ## Notes
 
-- Resource names default to a suffix derived from `vm_image_sku` (for example, `mumu22`, `mumu10`, `mumu11`, `mumu25`).
-- Set `resource_name_suffix` only when you want to override the auto-derived suffix.
-- NSG inbound access is intentionally restricted to the runner public IP plus `allowed_cidrs`.
-- Terraform triggers Ansible automatically during `apply` via `local-exec`.
+- Root `deploy.ps1` only routes to target-specific scripts; target logic is isolated per folder.
+- VM Terraform state/caches and tfvars are now expected under `vm/`.
+- AKS resources and ingress-nginx are provisioned by Terraform in `aks/`.
+- Optional docker-registry pull secret is also managed by Terraform when registry inputs are provided.
+- AKS script uses `vm/terraform.tfvars` location as default `AksLocation` only when `location` is not set in `aks/terraform.tfvars` and not passed as a CLI override.
+- Legacy `-BootstrapAks` still maps to AKS apply for backward compatibility.

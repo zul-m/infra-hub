@@ -1,0 +1,23 @@
+# Copy this file to terraform.tfvars and fill values when running terraform manually in aks/.
+resource_group_name          = "mumu-aks"
+location                     = "southeastasia"
+cluster_name                 = "mumu-aks1361"
+kubernetes_version           = "1.36.1"
+linux_node_count             = 1
+linux_node_vm_size           = "Standard_D4s_v3"
+windows_node_count           = 2
+windows_node_vm_size         = "Standard_D4_v3"
+windows_node_pool_name       = "win"
+windows_admin_username       = "mumu"
+windows_admin_password       = "<strong-password>"
+# log_analytics_workspace_name = "mumu-aks1361-law"
+
+# ingress_release_name         = "nginx-ingress"
+# ingress_chart_version        = "4.11.3"
+
+# Optional docker-registry pull secret.
+# create_registry_secret       = true
+# registry_secret_name         = "sitecore-docker-registry"
+# registry_server              = "ideftdevacr.azurecr.io"
+# registry_username            = "<registry-username>"
+# registry_password            = "<registry-password>"
