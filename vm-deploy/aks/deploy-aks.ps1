@@ -298,6 +298,11 @@ if ($PSBoundParameters.ContainsKey("AksRegistryUsername")) {
     $terraformArgs += @("-var", "registry_username=$AksRegistryUsername")
 }
 
+# Intentionally do not pass registry password via -var to avoid leaking secrets in process args.
+if ($createRegistrySecret -and -not $PSBoundParameters.ContainsKey("AksRegistryPassword")) {
+    throw "AksRegistryPassword is required when registry secret creation is enabled."
+}
+
 if ($AutoApprove) {
     $terraformArgs += "-auto-approve"
 }
@@ -307,6 +312,7 @@ if ($PSBoundParameters.ContainsKey("AksWindowsAdminPassword")) {
     $env:TF_VAR_windows_admin_password = $AksWindowsAdminPassword
 }
 if ($PSBoundParameters.ContainsKey("AksRegistryPassword")) {
+    Ensure-NonEmpty -Value $AksRegistryPassword -Name "AksRegistryPassword"
     $env:TF_VAR_registry_password = $AksRegistryPassword
 }
 
