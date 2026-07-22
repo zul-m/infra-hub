@@ -30,12 +30,21 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
 
       - name: Install Copilot CLI
-        run: npm install -g @github/copilot
+        run: |
+          for attempt in 1 2 3; do
+            npm install -g @github/copilot && break
+            if [ "$attempt" -eq 3 ]; then
+              echo "Failed to install @github/copilot after 3 attempts."
+              exit 1
+            fi
+            echo "Install failed (attempt $attempt). Retrying in 5s..."
+            sleep 5
+          done
 
       - name: Build PR review context
         env:
@@ -46,10 +55,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COPILOT_MODEL: gpt-5.2
-        run: >-
-          copilot -s --no-ask-user
-          --allow-tool='read(.github/prompts/copilot-pr-review.txt),read(pr-context.json),write(review.json)'
-          -p "Read .github/prompts/copilot-pr-review.txt and pr-context.json, then follow the prompt file exactly and write the final JSON object to review.json."
+        run: |
+          for attempt in 1 2 3; do
+            copilot -s --no-ask-user \
+              --allow-tool='read(.github/prompts/copilot-pr-review.txt),read(pr-context.json),write(review.json)' \
+              -p "Read .github/prompts/copilot-pr-review.txt and pr-context.json, then follow the prompt file exactly and write the final JSON object to review.json." \
+              > copilot-output.txt && break
+            if [ "$attempt" -eq 3 ]; then
+              echo "Copilot generation failed after 3 attempts."
+              exit 1
+            fi
+            echo "Copilot generation failed (attempt $attempt). Retrying in 10s..."
+            sleep 10
+          done
+
+      - name: Extract and validate review JSON
+        run: node .github/scripts/extract-review-json.mjs copilot-output.txt review.json
 
       - name: Post inline review comments
         env:

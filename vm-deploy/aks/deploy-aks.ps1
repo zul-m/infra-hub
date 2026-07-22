@@ -211,6 +211,16 @@ if ($AksRegistryServer -and $AksRegistryUsername -and $AksRegistryPassword) {
     throw "AksRegistryServer, AksRegistryUsername, and AksRegistryPassword must all be set together."
 }
 
+if ($Action -eq "apply" -and $AksWindowsNodeCount -gt 0 -and -not $AksWindowsAdminPassword) {
+    $tfvarsPath = Join-Path $PSScriptRoot "terraform.tfvars"
+    if (Test-Path $tfvarsPath) {
+        $tfvarsMatch = Select-String -Path $tfvarsPath -Pattern '^\s*windows_admin_password\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
+        if ($tfvarsMatch) {
+            $AksWindowsAdminPassword = $tfvarsMatch.Matches[0].Groups[1].Value
+        }
+    }
+}
+
 if ($Action -eq "apply" -and $AksWindowsNodeCount -gt 0) {
     Ensure-NonEmpty -Value $AksWindowsAdminPassword -Name "AksWindowsAdminPassword (required when AksWindowsNodeCount > 0)"
 }
