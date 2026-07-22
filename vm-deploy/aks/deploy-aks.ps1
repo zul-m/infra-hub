@@ -318,7 +318,7 @@ if ($AutoApprove) {
 }
 
 # Avoid quoting issues for special characters in passwords by passing via TF_VAR env.
-if ($AksWindowsAdminPassword) {
+if ($PSBoundParameters.ContainsKey("AksWindowsAdminPassword")) {
     $env:TF_VAR_windows_admin_password = $AksWindowsAdminPassword
 }
 if ($PSBoundParameters.ContainsKey("AksRegistryPassword")) {
