@@ -157,17 +157,28 @@ resource "terraform_data" "install_applications" {
 
   provisioner "local-exec" {
     command = <<-EOT
+      $ErrorActionPreference = "Stop"
+      $ProgressPreference = "SilentlyContinue"
+
+      function Log-Message {
+        param(
+          [string]$Message,
+          [string]$Level = "INFO"
+        )
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $logEntry = "[$timestamp] [$Level] $Message"
+        Write-Host $logEntry
+        Write-Host $logEntry | Out-File -FilePath "terraform-provision.log" -Append -Encoding utf8
+      }
+
       $user    = $env:ANSIBLE_WIN_USER
       $pass    = $env:ANSIBLE_WIN_PASSWORD
       $sqlUser = $env:SQL_ADMIN_USERNAME
       $sqlPass = $env:SQL_ADMIN_PASSWORD
 
-      Write-Host ""
-      Write-Host "============================================================"
-      Write-Host "[install_applications] Ansible provisioning started"
-      Write-Host "============================================================"
-      Write-Host "[install_applications] Installing Ansible collections..."
-      Write-Host "[install_applications] Running playbook against ${self.input.target_ip}..."
+      Log-Message "================================================================================================"
+      Log-Message "ANSIBLE PROVISIONING STARTED FOR HOST: ${self.input.target_ip}"
+      Log-Message "================================================================================================"
 
       function Invoke-CheckedNative {
         param(
@@ -177,10 +188,12 @@ resource "terraform_data" "install_applications" {
 
         & $Script
         if ($LASTEXITCODE -ne 0) {
+          Log-Message "COMMAND FAILED: $ErrorMessage (exit code: $LASTEXITCODE)" "ERROR"
           throw "$ErrorMessage (exit code: $LASTEXITCODE)"
         }
       }
 
+      Log-Message "Preparing variables and temporary files..."
       $extraVars = @{
         ansible_connection                  = "winrm"
         ansible_port                        = 5986
@@ -197,15 +210,17 @@ resource "terraform_data" "install_applications" {
         $extraVars | ConvertTo-Json -Depth 5 -Compress | Set-Content -Path $extraVarsFile -Encoding utf8
 
         if ($IsLinux -or $IsMacOS) {
-          # GitHub Actions / Linux: run ansible directly (no WSL needed)
+          Log-Message "Running on Linux/macOS - executing Ansible directly"
           Invoke-CheckedNative -Script {
-            bash -lc "export ANSIBLE_GALAXY_IGNORE_CERTS=true; ansible-galaxy collection install --ignore-certs -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsFile'"
+            bash -lc "export ANSIBLE_GALAXY_IGNORE_CERTS=true; export ANSIBLE_FORCE_COLOR=true; ansible-galaxy collection install --ignore-certs -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsFile' 2>&1"
           } -ErrorMessage "Ansible provisioning failed"
         } else {
-          # Windows: invoke ansible via WSL
+          Log-Message "Running on Windows - setting up WSL for Ansible execution"
           Invoke-CheckedNative -Script {
-            icacls $extraVarsFile /inheritance:r /grant:r "$($env:USERNAME):F"
+            icacls $extraVarsFile /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
           } -ErrorMessage "Failed to secure temporary extra vars file"
+
+          Log-Message "Converting paths to WSL format..."
           $cwd = (Get-Location).Path -replace '\\', '/'
           $wslpath = (wsl wslpath -a "$cwd").Trim()
           if ($LASTEXITCODE -ne 0) { throw "Failed to convert working directory to a WSL path (exit code: $LASTEXITCODE)" }
@@ -215,18 +230,25 @@ resource "terraform_data" "install_applications" {
           if ($LASTEXITCODE -ne 0) { throw "Failed to convert extra vars file path to a WSL path (exit code: $LASTEXITCODE)" }
           if (-not $extraVarsWslPath) { throw "Failed to convert extra vars file path to a WSL path" }
 
+          Log-Message "Installing Ansible collections..."
+          Log-Message "Running playbook against ${self.input.target_ip}..."
           Invoke-CheckedNative -Script {
-            wsl bash -lc "export ANSIBLE_GALAXY_IGNORE_CERTS=true; cd '$wslpath' && ansible-galaxy collection install --ignore-certs -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsWslPath'"
+            wsl bash -lc "export ANSIBLE_GALAXY_IGNORE_CERTS=true; export ANSIBLE_FORCE_COLOR=true; cd '$wslpath' && ansible-galaxy collection install --ignore-certs -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsWslPath' 2>&1" | ForEach-Object {
+              Log-Message $_
+            }
           } -ErrorMessage "Ansible provisioning failed"
         }
       } finally {
         if (Test-Path $extraVarsFile) {
+          Log-Message "Cleaning up temporary files..."
           Remove-Item -Path $extraVarsFile -Force
         }
       }
 
-      Write-Host "============================================================"
-      Write-Host "[install_applications] Completed."
+      Log-Message "================================================================================================"
+      Log-Message "ANSIBLE PROVISIONING COMPLETED SUCCESSFULLY"
+      Log-Message "================================================================================================"
+      Log-Message "Full log saved to: terraform-provision.log"
     EOT
 
     environment = {
