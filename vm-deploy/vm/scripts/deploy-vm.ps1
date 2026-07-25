@@ -1,57 +1,35 @@
 <#
 .SYNOPSIS
-    AKS deployment tool for vm-deploy/aks.
+    VM deployment tool for vm-deploy/vm.
 
 .DESCRIPTION
-    Uses Terraform to provision AKS resources and addons.
+    Run with no arguments for the arrow-key menu.
+    Pass parameters directly to skip the menu (useful for scripting).
+
+.PARAMETER OsVersion
+    OS profile: win11 | win10 | win19 | win22 | win25
 
 .PARAMETER Action
-    AKS action: apply | destroy
+    Terraform action: plan | apply | destroy
+
+.PARAMETER VmSize
+    VM size: Standard_D4s_v3 | Standard_D8s_v3
 
 .PARAMETER AutoApprove
-    Skip confirmation prompts.
+    Skip the Terraform confirmation prompt.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet("apply", "destroy")]
+    [ValidateSet("win10", "win11", "win19", "win22", "win25")]
+    [string]$OsVersion,
+
+    [ValidateSet("plan", "apply", "destroy")]
     [string]$Action,
 
-    [switch]$AutoApprove,
+    [ValidateSet("Standard_D4s_v3", "Standard_D8s_v3")]
+    [string]$VmSize,
 
-    [string]$AksResourceGroup = "mumu-aks",
-
-    [string]$AksClusterName = "mumu-aks1361",
-
-    [string]$AksLocation,
-
-    [string]$AksKubernetesVersion = "1.36.1",
-
-    [ValidateSet("Free", "Standard", "Premium")]
-    [string]$AksSkuTier = "Free",
-
-    [int]$AksLinuxNodeCount = 1,
-
-    [string]$AksLinuxNodeVmSize = "Standard_D4s_v3",
-
-    [int]$AksWindowsNodeCount = 2,
-
-    [string]$AksWindowsNodeVmSize = "Standard_D4_v3",
-
-    [string]$AksWindowsNodePoolName = "win",
-
-    [string]$AksWindowsAdminUsername = "mumu",
-
-    [string]$AksWindowsAdminPassword,
-
-    [string]$AksLogAnalyticsWorkspaceName,
-
-    [string]$AksRegistryServer,
-
-    [string]$AksRegistryUsername,
-
-    [string]$AksRegistryPassword,
-
-    [string]$AksRegistrySecretName = "sitecore-docker-registry"
+    [switch]$AutoApprove
 )
 
 Set-StrictMode -Version Latest
@@ -77,7 +55,7 @@ function Ensure-AzLogin {
     )
 
     if ($choice -ne 0) {
-        throw "Azure sign-in is required before running AKS operations."
+        throw "Azure sign-in is required before running Terraform."
     }
 
     Write-Host "  Launching Azure login (device code)..." -ForegroundColor Cyan
@@ -112,7 +90,8 @@ function Get-TerraformResourceSummary {
     $changed = New-Object System.Collections.Generic.List[string]
     $destroyed = New-Object System.Collections.Generic.List[string]
 
-    foreach ($line in ($combined -split "`r?`n")) {
+    $lines = $combined -split "`r?`n"
+    foreach ($line in $lines) {
         if ($line -match '^\s*#\s+(?<resource>\S+)\s+will be created') {
             $created.Add($matches.resource)
             continue
@@ -188,12 +167,14 @@ function Write-TerraformResourceList {
     }
 
     Write-Host ("  {0}:" -f $Title) -ForegroundColor DarkGray
-    foreach ($resource in ($list | Select-Object -First $MaxItems)) {
+    $display = $list | Select-Object -First $MaxItems
+    foreach ($resource in $display) {
         Write-Host ("    - {0}" -f $resource) -ForegroundColor Gray
     }
 
     if ($list.Count -gt $MaxItems) {
-        Write-Host ("    ... and {0} more" -f ($list.Count - $MaxItems)) -ForegroundColor Gray
+        $remaining = $list.Count - $MaxItems
+        Write-Host ("    ... and {0} more" -f $remaining) -ForegroundColor Gray
     }
 }
 
@@ -220,6 +201,8 @@ function Invoke-TerraformMinimal {
 
     Write-Host "  Terraform: $DisplayName" -ForegroundColor Cyan
 
+    # Run terraform as a child process with redirected streams to prevent raw
+    # cursor-control sequences from being written directly to the terminal.
     $terraformPath = (Get-Command terraform -ErrorAction Stop).Source
     $allArgs = @($Arguments + @("-no-color"))
     $quotedArgs = $allArgs | ForEach-Object {
@@ -256,8 +239,8 @@ function Invoke-TerraformMinimal {
 
     $stdout = $stdoutTask.GetAwaiter().GetResult()
     $stderr = $stderrTask.GetAwaiter().GetResult()
-    $summary = Get-TerraformResourceSummary -Action $DisplayName -StdOut $stdout -StdErr $stderr
 
+    $summary = Get-TerraformResourceSummary -Action $DisplayName -StdOut $stdout -StdErr $stderr
     return [pscustomobject]@{
         ExitCode = $process.ExitCode
         StdOut   = $stdout
@@ -266,15 +249,122 @@ function Invoke-TerraformMinimal {
     }
 }
 
-function Ensure-NonEmpty {
+function Get-TfvarsQuotedValue {
     param(
-        [string]$Value,
-        [string]$Name
+        [string]$Key,
+        [string]$Guidance
     )
 
-    if (-not $Value -or [string]::IsNullOrWhiteSpace($Value)) {
-        throw "$Name is required."
+    $tfvarsPath = Join-Path (Split-Path $PSScriptRoot -Parent) "terraform.tfvars"
+    if (-not (Test-Path $tfvarsPath)) {
+        throw "terraform.tfvars was not found at '$tfvarsPath'. This file must define $Key for preflight checks."
     }
+
+    $escapedKey = [regex]::Escape($Key)
+    $pattern = '^\s*' + $escapedKey + '\s*=\s*"([^"]+)"\s*$'
+    $match = Select-String -Path $tfvarsPath -Pattern $pattern | Select-Object -First 1
+    if (-not $match) {
+        throw $Guidance
+    }
+
+    return $match.Matches[0].Groups[1].Value
+}
+
+function Get-TerraformLocation {
+    return Get-TfvarsQuotedValue -Key "location" -Guidance 'No location entry was found in terraform.tfvars. Add a line like: location = "southeastasia"'
+}
+
+function Test-AzVmImageSkuAvailable {
+    param(
+        [hashtable]$Image,
+        [string]$Location,
+        [string]$Action
+    )
+
+    if ($Action -eq "destroy") {
+        return
+    }
+
+    Write-Host "  Preflight: validating image SKU '$($Image.sku)' in '$Location'..." -ForegroundColor Cyan
+
+    $skuNames = & az vm image list-skus --location $Location --publisher $Image.publisher --offer $Image.offer --query "[].name" --output tsv
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to query image SKUs from Azure CLI for location '$Location' (publisher '$($Image.publisher)', offer '$($Image.offer)')."
+    }
+
+    if (-not $skuNames -or ($skuNames -notcontains $Image.sku)) {
+        throw "Selected image SKU '$($Image.sku)' is not available in location '$Location' for publisher '$($Image.publisher)' and offer '$($Image.offer)'."
+    }
+
+    Write-Host "  Preflight: image SKU is available." -ForegroundColor Green
+}
+
+function Assert-VcpuQuotaHeadroom {
+    param(
+        [pscustomobject]$Usage,
+        [int]$RequiredCores,
+        [string]$QuotaLabel
+    )
+
+    if (-not $Usage) {
+        throw "Quota entry '$QuotaLabel' was not found in Azure usage output."
+    }
+
+    $current = [int]$Usage.current
+    $limit = [int]$Usage.limit
+    $available = $limit - $current
+    if ($available -lt $RequiredCores) {
+        throw "Insufficient $QuotaLabel quota: required $RequiredCores vCPUs, available $available (current $current / limit $limit)."
+    }
+}
+
+function Test-AzVmQuotaAvailable {
+    param(
+        [string]$Location,
+        [string]$VmSize,
+        [string]$Action
+    )
+
+    if ($Action -eq "destroy") {
+        return
+    }
+
+    Write-Host "  Preflight: validating quota for VM size '$VmSize' in '$Location'..." -ForegroundColor Cyan
+
+    $skuInfoJson = & az vm list-skus --location $Location --size $VmSize --resource-type virtualMachines --query '[0].{name:name,family:family,vcpus:capabilities[?name==`"vCPUs`"].value | [0]}' --output json
+    if ($LASTEXITCODE -ne 0 -or -not $skuInfoJson) {
+        throw "Failed to query VM SKU metadata for '$VmSize' in '$Location'."
+    }
+
+    $skuInfo = $skuInfoJson | ConvertFrom-Json
+    if (-not $skuInfo -or -not $skuInfo.vcpus) {
+        throw "VM size '$VmSize' was not found in location '$Location'."
+    }
+
+    $requiredCores = [int]$skuInfo.vcpus
+    if ($requiredCores -le 0) {
+        throw "Could not determine required vCPUs for VM size '$VmSize'."
+    }
+
+    $familyQuotaKey = [string]$skuInfo.family
+    $usageQuery = "[?name.value=='cores' || name.value=='$familyQuotaKey'].{value:name.value,current:currentValue,limit:limit}"
+    $usageJson = & az vm list-usage --location $Location --query $usageQuery --output json
+    if ($LASTEXITCODE -ne 0 -or -not $usageJson) {
+        throw "Failed to query quota usage for location '$Location'."
+    }
+
+    $usage = $usageJson | ConvertFrom-Json
+    $regional = $usage | Where-Object { $_.value -eq "cores" } | Select-Object -First 1
+    Assert-VcpuQuotaHeadroom -Usage $regional -RequiredCores $requiredCores -QuotaLabel "regional vCPU"
+
+    if ($familyQuotaKey) {
+        $family = $usage | Where-Object { $_.value -eq $familyQuotaKey } | Select-Object -First 1
+        if ($family) {
+            Assert-VcpuQuotaHeadroom -Usage $family -RequiredCores $requiredCores -QuotaLabel "family vCPU ($familyQuotaKey)"
+        }
+    }
+
+    Write-Host "  Preflight: quota is sufficient (needs $requiredCores vCPUs)." -ForegroundColor Green
 }
 
 function Select-Option {
@@ -338,179 +428,103 @@ function Select-Option {
     }
 }
 
-function Get-DefaultAksLocation {
-    $vmTfvarsPath = Join-Path (Join-Path $PSScriptRoot "..") "vm\terraform.tfvars"
-    if (-not (Test-Path $vmTfvarsPath)) {
-        return $null
-    }
-
-    $match = Select-String -Path $vmTfvarsPath -Pattern '^\s*location\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
-    if (-not $match) {
-        return $null
-    }
-
-    return $match.Matches[0].Groups[1].Value
-}
-
-if (-not $AksLocation) {
-    $AksLocation = Get-DefaultAksLocation
+$Profiles = [ordered]@{
+    win11 = @{ label = "Windows 11 24H2 Pro  (win11-24h2-pro)"; publisher = "MicrosoftWindowsDesktop"; offer = "Windows-11"; sku = "win11-24h2-pro"; version = "latest" }
+    win10 = @{ label = "Windows 10 22H2 Pro  (win10-22h2-pro-g2)"; publisher = "MicrosoftWindowsDesktop"; offer = "Windows-10"; sku = "win10-22h2-pro-g2"; version = "latest" }
+    win19 = @{ label = "Windows Server 2019  (2019-datacenter-gensecond)"; publisher = "MicrosoftWindowsServer"; offer = "WindowsServer"; sku = "2019-datacenter-gensecond"; version = "latest" }
+    win22 = @{ label = "Windows Server 2022  (2022-datacenter-g2)"; publisher = "MicrosoftWindowsServer"; offer = "WindowsServer"; sku = "2022-datacenter-g2"; version = "latest" }
+    win25 = @{ label = "Windows Server 2025  (2025-datacenter-g2)"; publisher = "MicrosoftWindowsServer"; offer = "WindowsServer"; sku = "2025-datacenter-g2"; version = "latest" }
 }
 
 Write-Host ""
 Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
-Write-Host "  |       AKS Deploy (Terraform)         |" -ForegroundColor Cyan
+Write-Host "  |             VM  Deploy               |" -ForegroundColor Cyan
 Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
 
+if (-not $OsVersion) {
+    $labels = $Profiles.Keys | ForEach-Object { $Profiles[$_].label }
+    $picked = Select-Option -Prompt "Select OS version:" -Options $labels -Default 0
+    $OsVersion = $Profiles.Keys | Where-Object { $Profiles[$_].label -eq $picked } | Select-Object -First 1
+}
+
 if (-not $Action) {
-    $Action = Select-Option -Prompt "Select action:" -Options @("apply", "destroy") -Default 0
+    $Action = Select-Option -Prompt "Select action:" -Options @("plan", "apply", "destroy") -Default 0
 }
 
-if (-not $AutoApprove) {
-    $choice = Select-Option -Prompt "Auto-approve?" -Options @("No  - pause and review before applying", "Yes - execute immediately") -Default 0
-    $AutoApprove = $choice -like "Yes*"
-}
-
-$createRegistrySecret = $false
-if ($AksRegistryServer -and $AksRegistryUsername -and $AksRegistryPassword) {
-    $createRegistrySecret = $true
-} elseif ($AksRegistryServer -or $AksRegistryUsername -or $AksRegistryPassword) {
-    throw "AksRegistryServer, AksRegistryUsername, and AksRegistryPassword must all be set together."
-}
-
-if ($Action -eq "apply" -and $AksWindowsNodeCount -gt 0 -and -not $AksWindowsAdminPassword) {
-    $tfvarsPath = Join-Path $PSScriptRoot "terraform.tfvars"
-    if (Test-Path $tfvarsPath) {
-        $tfvarsMatch = Select-String -Path $tfvarsPath -Pattern '^\s*windows_admin_password\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
-        if ($tfvarsMatch) {
-            $AksWindowsAdminPassword = $tfvarsMatch.Matches[0].Groups[1].Value
-        }
+if (-not $VmSize -and $Action -ne "destroy") {
+    $vmSizeChoice = Select-Option -Prompt "Select VM size:" -Options @("D4s_v3  - Standard_D4s_v3", "D8s_v3  - Standard_D8s_v3") -Default -1
+    if ($vmSizeChoice -like "D8s_v3*") {
+        $VmSize = "Standard_D8s_v3"
+    } else {
+        $VmSize = "Standard_D4s_v3"
     }
 }
 
-if ($Action -eq "apply" -and $AksWindowsNodeCount -gt 0) {
-    Ensure-NonEmpty -Value $AksWindowsAdminPassword -Name "AksWindowsAdminPassword (required when AksWindowsNodeCount > 0)"
+if (-not $AutoApprove -and $Action -ne "plan") {
+    $choice = Select-Option -Prompt "Auto-approve?" -Options @("No  - pause and review before applying", "Yes - apply immediately") -Default 0
+    $AutoApprove = $choice -like "Yes*"
 }
+
+$img = $Profiles[$OsVersion]
 
 Write-Host ""
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
 Write-Host "  |              Summary                 |" -ForegroundColor DarkGray
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
-Write-Host ("  |  Target       : {0,-22}|" -f "aks") -ForegroundColor White
+Write-Host ("  |  Target       : {0,-22}|" -f "vm") -ForegroundColor White
 Write-Host ("  |  Action       : {0,-22}|" -f $Action) -ForegroundColor White
 Write-Host ("  |  Auto-approve : {0,-22}|" -f ([string]$AutoApprove)) -ForegroundColor White
-Write-Host ("  |  AKS RG       : {0,-22}|" -f $AksResourceGroup) -ForegroundColor White
-Write-Host ("  |  AKS cluster  : {0,-22}|" -f $AksClusterName) -ForegroundColor White
-Write-Host ("  |  K8s version  : {0,-22}|" -f $AksKubernetesVersion) -ForegroundColor White
-Write-Host ("  |  SKU tier     : {0,-22}|" -f $AksSkuTier) -ForegroundColor White
-Write-Host ("  |  Location     : {0,-22}|" -f $AksLocation) -ForegroundColor White
+Write-Host ("  |  OS           : {0,-22}|" -f $OsVersion) -ForegroundColor White
+Write-Host ("  |  SKU          : {0,-22}|" -f $img.sku) -ForegroundColor White
+Write-Host ("  |  VM size      : {0,-22}|" -f $VmSize) -ForegroundColor White
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
 Write-Host ""
 
 if ($Action -eq "destroy" -and -not $AutoApprove) {
-    $ok = $Host.UI.PromptForChoice(
-        "  Confirm AKS destroy",
-        "  This will DELETE AKS cluster '$AksClusterName' and managed resources. Continue?",
-        @("&Yes", "&No"),
-        1
-    )
+    $ok = $Host.UI.PromptForChoice("  Confirm destroy", "  This will DELETE all VM resources. Continue?", @("&Yes", "&No"), 1)
     if ($ok -ne 0) {
         Write-Host "  Cancelled.`n"
         exit 0
     }
+    Write-Host ""
 }
 
-$terraformArgs = @(
-    $Action
+$tfArgs = @(
+    $Action,
+    "-var", "vm_image_publisher=$($img.publisher)",
+    "-var", "vm_image_offer=$($img.offer)",
+    "-var", "vm_image_sku=$($img.sku)",
+    "-var", "vm_image_version=$($img.version)"
 )
 
-if ($PSBoundParameters.ContainsKey("AksResourceGroup")) {
-    $terraformArgs += @("-var", "resource_group_name=$AksResourceGroup")
-}
-if ($PSBoundParameters.ContainsKey("AksClusterName")) {
-    $terraformArgs += @("-var", "cluster_name=$AksClusterName")
-}
-if ($PSBoundParameters.ContainsKey("AksLocation")) {
-    $terraformArgs += @("-var", "location=$AksLocation")
-}
-if ($PSBoundParameters.ContainsKey("AksKubernetesVersion")) {
-    $terraformArgs += @("-var", "kubernetes_version=$AksKubernetesVersion")
-}
-if ($PSBoundParameters.ContainsKey("AksSkuTier")) {
-    $terraformArgs += @("-var", "aks_sku_tier=$AksSkuTier")
-}
-if ($PSBoundParameters.ContainsKey("AksLinuxNodeCount")) {
-    $terraformArgs += @("-var", "linux_node_count=$AksLinuxNodeCount")
-}
-if ($PSBoundParameters.ContainsKey("AksLinuxNodeVmSize")) {
-    $terraformArgs += @("-var", "linux_node_vm_size=$AksLinuxNodeVmSize")
-}
-if ($PSBoundParameters.ContainsKey("AksWindowsNodeCount")) {
-    $terraformArgs += @("-var", "windows_node_count=$AksWindowsNodeCount")
-}
-if ($PSBoundParameters.ContainsKey("AksWindowsNodeVmSize")) {
-    $terraformArgs += @("-var", "windows_node_vm_size=$AksWindowsNodeVmSize")
-}
-if ($PSBoundParameters.ContainsKey("AksWindowsNodePoolName")) {
-    $terraformArgs += @("-var", "windows_node_pool_name=$AksWindowsNodePoolName")
-}
-if ($PSBoundParameters.ContainsKey("AksWindowsAdminUsername")) {
-    $terraformArgs += @("-var", "windows_admin_username=$AksWindowsAdminUsername")
-}
-if ($PSBoundParameters.ContainsKey("AksRegistrySecretName")) {
-    $terraformArgs += @("-var", "registry_secret_name=$AksRegistrySecretName")
-}
-if ($PSBoundParameters.ContainsKey("AksLogAnalyticsWorkspaceName")) {
-    $terraformArgs += @("-var", "log_analytics_workspace_name=$AksLogAnalyticsWorkspaceName")
+if ($VmSize) {
+    $tfArgs += @("-var", "vm_size=$VmSize")
 }
 
-if ($createRegistrySecret) {
-    $terraformArgs += @("-var", "create_registry_secret=true")
+if ($AutoApprove -and $Action -ne "plan") {
+    $tfArgs += "-auto-approve"
 }
 
-if ($PSBoundParameters.ContainsKey("AksRegistryServer")) {
-    $terraformArgs += @("-var", "registry_server=$AksRegistryServer")
-}
-if ($PSBoundParameters.ContainsKey("AksRegistryUsername")) {
-    $terraformArgs += @("-var", "registry_username=$AksRegistryUsername")
-}
-
-# Intentionally do not pass registry password via -var to avoid leaking secrets in process args.
-if ($createRegistrySecret -and -not $PSBoundParameters.ContainsKey("AksRegistryPassword")) {
-    throw "AksRegistryPassword is required when registry secret creation is enabled."
-}
-
-if ($AutoApprove) {
-    $terraformArgs += "-auto-approve"
-}
-
-# Avoid quoting issues for special characters in passwords by passing via TF_VAR env.
-if ($PSBoundParameters.ContainsKey("AksWindowsAdminPassword")) {
-    $env:TF_VAR_windows_admin_password = $AksWindowsAdminPassword
-}
-if ($PSBoundParameters.ContainsKey("AksRegistryPassword")) {
-    Ensure-NonEmpty -Value $AksRegistryPassword -Name "AksRegistryPassword"
-    $env:TF_VAR_registry_password = $AksRegistryPassword
-}
-
-Push-Location $PSScriptRoot
+Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
     Assert-TerraformInstalled
     Ensure-AzLogin
+
+    $location = Get-TerraformLocation
+    Test-AzVmImageSkuAvailable -Image $img -Location $location -Action $Action
+    Test-AzVmQuotaAvailable -Location $location -VmSize $VmSize -Action $Action
 
     $initResult = Invoke-TerraformMinimal -Arguments @("init", "-input=false") -DisplayName "init"
     if ($initResult.ExitCode -ne 0) {
         throw "terraform init exited with code $($initResult.ExitCode)"
     }
 
-    $actionResult = Invoke-TerraformMinimal -Arguments $terraformArgs -DisplayName $Action
+    $actionResult = Invoke-TerraformMinimal -Arguments $tfArgs -DisplayName $Action
     if ($actionResult.ExitCode -ne 0) {
         throw "terraform $Action exited with code $($actionResult.ExitCode)"
     }
 
     Write-TerraformSummary -Summary $actionResult.Summary
-
 } finally {
-    Remove-Item Env:TF_VAR_windows_admin_password -ErrorAction SilentlyContinue
-    Remove-Item Env:TF_VAR_registry_password -ErrorAction SilentlyContinue
     Pop-Location
 }
