@@ -34,6 +34,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+trap [System.OperationCanceledException] {
+    return
+}
 
 function Ensure-AzLogin {
     if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
@@ -193,6 +196,61 @@ function Write-TerraformSummary {
     Write-TerraformResourceList -Title "Destroyed" -Resources $Summary.DestroyedResources
 }
 
+function Get-TerraformStageLabel {
+    param(
+        [string]$ResourceName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ResourceName)) {
+        return "Applying infrastructure changes"
+    }
+
+    switch -Wildcard ($ResourceName) {
+        "azurerm_resource_group.*" { return "Creating resource group" }
+        "azurerm_virtual_network.*" { return "Configuring virtual network" }
+        "azurerm_subnet.*" { return "Configuring virtual network" }
+        "azurerm_network_security_group.*" { return "Configuring network security" }
+        "azurerm_network_security_rule.*" { return "Configuring network security" }
+        "azurerm_subnet_network_security_group_association.*" { return "Attaching network security rules" }
+        "azurerm_public_ip.*" { return "Allocating public IP" }
+        "azurerm_network_interface.*" { return "Configuring VM network interface" }
+        "azurerm_windows_virtual_machine.*" { return "Creating Windows virtual machine" }
+        "azurerm_virtual_machine_extension.winrm_https" { return "Configuring WinRM over HTTPS" }
+        "azurerm_dev_test_global_vm_shutdown_schedule.*" { return "Configuring auto-shutdown schedule" }
+        "terraform_data.install_applications" { return "Installing applications (SQL Server, SSMS, Azure CLI, Notepad++)" }
+        default { return "Applying infrastructure changes" }
+    }
+}
+
+function Get-LocalExecStageLabel {
+    param(
+        [string]$ResourceName,
+        [string]$Message
+    )
+
+    if ($ResourceName -ne "terraform_data.install_applications") {
+        return $null
+    }
+
+    if ($Message -match "ANSIBLE PROVISIONING STARTED") {
+        return "Installing applications (SQL Server, SSMS, Azure CLI, Notepad++)"
+    }
+    if ($Message -match "Installing Ansible collections") {
+        return "Preparing Ansible collections"
+    }
+    if ($Message -match "Running playbook against") {
+        return "Applying application playbook"
+    }
+    if ($Message -match "Provisioning attempt") {
+        return "Provisioning applications"
+    }
+    if ($Message -match "ANSIBLE PROVISIONING COMPLETED SUCCESSFULLY") {
+        return "Application provisioning completed"
+    }
+
+    return $null
+}
+
 function Invoke-TerraformMinimal {
     param(
         [string[]]$Arguments,
@@ -201,8 +259,6 @@ function Invoke-TerraformMinimal {
 
     Write-Host "  Terraform: $DisplayName" -ForegroundColor Cyan
 
-    # Run terraform as a child process with redirected streams to prevent raw
-    # cursor-control sequences from being written directly to the terminal.
     $terraformPath = (Get-Command terraform -ErrorAction Stop).Source
     $allArgs = @($Arguments + @("-no-color"))
     $quotedArgs = $allArgs | ForEach-Object {
@@ -234,7 +290,7 @@ function Invoke-TerraformMinimal {
     while (-not $process.WaitForExit(30000)) {
         $heartbeatTicks++
         $elapsedSeconds = $heartbeatTicks * 30
-        Write-Host "  Terraform still running... [${elapsedSeconds}s elapsed]" -ForegroundColor DarkGray
+        Write-Host ("  Terraform still running... [{0}s elapsed]" -f $elapsedSeconds) -ForegroundColor DarkGray
     }
 
     $stdout = $stdoutTask.GetAwaiter().GetResult()
@@ -423,7 +479,10 @@ function Select-Option {
                     return $Options[$idx]
                 }
             }
-            Escape { Write-Host "`n  Cancelled.`n"; exit 0 }
+            Escape {
+                Write-Host "`n  Cancelled.`n"
+                throw [System.OperationCanceledException]::new("VM deployment selection cancelled by user.")
+            }
         }
     }
 }
@@ -484,7 +543,7 @@ if ($Action -eq "destroy" -and -not $AutoApprove) {
     $ok = $Host.UI.PromptForChoice("  Confirm destroy", "  This will DELETE all VM resources. Continue?", @("&Yes", "&No"), 1)
     if ($ok -ne 0) {
         Write-Host "  Cancelled.`n"
-        exit 0
+        throw [System.OperationCanceledException]::new("VM destroy cancelled by user.")
     }
     Write-Host ""
 }
@@ -516,11 +575,26 @@ try {
 
     $initResult = Invoke-TerraformMinimal -Arguments @("init", "-input=false") -DisplayName "init"
     if ($initResult.ExitCode -ne 0) {
+        if ($initResult.StdErr) {
+            Write-Host ""
+            Write-Host "  Error Output:" -ForegroundColor Red
+            Write-Host $initResult.StdErr -ForegroundColor Red
+        }
         throw "terraform init exited with code $($initResult.ExitCode)"
     }
 
     $actionResult = Invoke-TerraformMinimal -Arguments $tfArgs -DisplayName $Action
     if ($actionResult.ExitCode -ne 0) {
+        if ($actionResult.StdErr) {
+            Write-Host ""
+            Write-Host "  Error Output:" -ForegroundColor Red
+            Write-Host $actionResult.StdErr -ForegroundColor Red
+        }
+        if ($actionResult.StdOut) {
+            Write-Host ""
+            Write-Host "  Output:" -ForegroundColor Yellow
+            Write-Host $actionResult.StdOut -ForegroundColor Yellow
+        }
         throw "terraform $Action exited with code $($actionResult.ExitCode)"
     }
 

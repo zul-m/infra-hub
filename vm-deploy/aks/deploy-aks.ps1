@@ -56,6 +56,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+trap [System.OperationCanceledException] {
+    return
+}
 
 function Ensure-AzLogin {
     if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
@@ -333,7 +336,10 @@ function Select-Option {
                     return $Options[$idx]
                 }
             }
-            Escape { Write-Host "`n  Cancelled.`n"; exit 0 }
+            Escape {
+                Write-Host "`n  Cancelled.`n"
+                throw [System.OperationCanceledException]::new("AKS deployment selection cancelled by user.")
+            }
         }
     }
 }
@@ -415,7 +421,7 @@ if ($Action -eq "destroy" -and -not $AutoApprove) {
     )
     if ($ok -ne 0) {
         Write-Host "  Cancelled.`n"
-        exit 0
+        throw [System.OperationCanceledException]::new("AKS destroy cancelled by user.")
     }
 }
 

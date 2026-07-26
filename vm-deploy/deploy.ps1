@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Keeps deployment entrypoint at vm-deploy root and dispatches to:
-    - vm/deploy-vm.ps1
+    - vm/scripts/deploy-vm.ps1
     - aks/deploy-aks.ps1
 
 .PARAMETER Target
@@ -50,6 +50,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+trap [System.OperationCanceledException] {
+    return
+}
 
 function Select-Option {
     param(
@@ -107,7 +110,10 @@ function Select-Option {
                     return $Options[$idx]
                 }
             }
-            Escape { Write-Host "`n  Cancelled.`n"; exit 0 }
+            Escape {
+                Write-Host "`n  Cancelled.`n"
+                throw [System.OperationCanceledException]::new("Deployment selection cancelled by user.")
+            }
         }
     }
 }
@@ -141,7 +147,7 @@ if (-not $Target) {
     $Target = if ($targetChoice -eq "AKS") { "aks" } else { "vm" }
 }
 
-$vmScript = Join-Path $PSScriptRoot "vm\deploy-vm.ps1"
+$vmScript = Join-Path $PSScriptRoot "vm\scripts\deploy-vm.ps1"
 $aksScript = Join-Path $PSScriptRoot "aks\deploy-aks.ps1"
 
 if ($Target -eq "vm" -and $hasAksParams) {
@@ -164,7 +170,10 @@ if ($Target -eq "vm") {
     if ($AutoApprove) { $vmParams.AutoApprove = $true }
 
     & $vmScript @vmParams
-    exit $LASTEXITCODE
+    if ($LASTEXITCODE -ne 0) {
+        throw "VM deployment script exited with code $LASTEXITCODE"
+    }
+    return
 }
 
 if (-not (Test-Path $aksScript)) {
@@ -201,4 +210,7 @@ if ($PSBoundParameters.ContainsKey("AksRegistryPassword")) { $aksParams.AksRegis
 if ($PSBoundParameters.ContainsKey("AksRegistrySecretName")) { $aksParams.AksRegistrySecretName = $AksRegistrySecretName }
 
 & $aksScript @aksParams
-exit $LASTEXITCODE
+if ($LASTEXITCODE -ne 0) {
+    throw "AKS deployment script exited with code $LASTEXITCODE"
+}
+return
