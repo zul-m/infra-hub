@@ -66,6 +66,28 @@ jobs:
             sleep 10
           done
 
+      - name: Debug Copilot output artifacts
+        if: always()
+        run: |
+          echo "=== Copilot Artifact Debug ==="
+          if [ -f copilot-output.txt ]; then
+            echo "copilot-output.txt bytes: $(wc -c < copilot-output.txt)"
+            echo "--- copilot-output.txt (first 200 lines) ---"
+            sed -n '1,200p' copilot-output.txt
+            echo "--- end copilot-output.txt ---"
+          else
+            echo "copilot-output.txt not found"
+          fi
+
+          if [ -f review.json ]; then
+            echo "review.json bytes: $(wc -c < review.json)"
+            echo "--- review.json ---"
+            cat review.json
+            echo "--- end review.json ---"
+          else
+            echo "review.json not found"
+          fi
+
       - name: Extract and validate review JSON
         run: node .github/scripts/extract-review-json.mjs copilot-output.txt review.json
 

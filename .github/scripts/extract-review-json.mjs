@@ -182,13 +182,14 @@ if (!isValidReviewPayload(parsed)) {
   for (const source of sources) {
     const candidate = parseCandidate(source.raw);
     process.stderr.write(`Extraction debug for ${source.name}:\n`);
+    process.stderr.write(`- Raw length: ${source.raw.length}\n`);
     process.stderr.write(`- Raw preview: ${safePreview(source.raw)}\n`);
     process.stderr.write(`- Parsed candidate: ${JSON.stringify(candidate, null, 2)}\n`);
     process.stderr.write(`- Valid payload: ${isValidReviewPayload(candidate)}\n`);
   }
 
   throw new Error(
-    "Could not extract a valid review JSON object with summary/comments from Copilot output.",
+    "Could not extract a valid review JSON. Expected format: { summary: string, comments: [{ path: string, line: number, body: string, severity?: high|medium|low }] }.",
   );
 }
 
