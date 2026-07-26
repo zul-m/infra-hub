@@ -156,109 +156,17 @@ resource "terraform_data" "install_applications" {
   ]
 
   provisioner "local-exec" {
-    command = <<-EOT
-      $ErrorActionPreference = "Stop"
-      $ProgressPreference = "SilentlyContinue"
-
-      function Log-Message {
-        param(
-          [string]$Message,
-          [string]$Level = "INFO"
-        )
-        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        $logEntry = "[$timestamp] [$Level] $Message"
-        Write-Host $logEntry
-        Write-Host $logEntry | Out-File -FilePath "terraform-provision.log" -Append -Encoding utf8
-      }
-
-      $user    = $env:ANSIBLE_WIN_USER
-      $pass    = $env:ANSIBLE_WIN_PASSWORD
-      $sqlUser = $env:SQL_ADMIN_USERNAME
-      $sqlPass = $env:SQL_ADMIN_PASSWORD
-
-      Log-Message "================================================================================================"
-      Log-Message "ANSIBLE PROVISIONING STARTED FOR HOST: ${self.input.target_ip}"
-      Log-Message "================================================================================================"
-
-      function Invoke-CheckedNative {
-        param(
-          [scriptblock]$Script,
-          [string]$ErrorMessage
-        )
-
-        & $Script
-        if ($LASTEXITCODE -ne 0) {
-          Log-Message "COMMAND FAILED: $ErrorMessage (exit code: $LASTEXITCODE)" "ERROR"
-          throw "$ErrorMessage (exit code: $LASTEXITCODE)"
-        }
-      }
-
-      Log-Message "Preparing variables and temporary files..."
-      $extraVars = @{
-        ansible_connection                  = "winrm"
-        ansible_port                        = 5986
-        ansible_winrm_transport             = "ntlm"
-        ansible_winrm_server_cert_validation = "ignore"
-        ansible_user                        = $user
-        ansible_password                    = $pass
-        sql_admin_username                  = $sqlUser
-        sql_admin_password                  = $sqlPass
-      }
-
-      $extraVarsFile = [System.IO.Path]::GetTempFileName()
-      try {
-        $extraVars | ConvertTo-Json -Depth 5 -Compress | Set-Content -Path $extraVarsFile -Encoding utf8
-
-        if ($IsLinux -or $IsMacOS) {
-          Log-Message "Running on Linux/macOS - executing Ansible directly"
-          Invoke-CheckedNative -Script {
-            bash -lc "export ANSIBLE_GALAXY_IGNORE_CERTS=true; export ANSIBLE_FORCE_COLOR=true; ansible-galaxy collection install --ignore-certs -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsFile' 2>&1"
-          } -ErrorMessage "Ansible provisioning failed"
-        } else {
-          Log-Message "Running on Windows - setting up WSL for Ansible execution"
-          Invoke-CheckedNative -Script {
-            icacls $extraVarsFile /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
-          } -ErrorMessage "Failed to secure temporary extra vars file"
-
-          Log-Message "Converting paths to WSL format..."
-          $cwd = (Get-Location).Path -replace '\\', '/'
-          $wslpath = (wsl wslpath -a "$cwd").Trim()
-          if ($LASTEXITCODE -ne 0) { throw "Failed to convert working directory to a WSL path (exit code: $LASTEXITCODE)" }
-          if (-not $wslpath) { throw "Failed to convert working directory to a WSL path" }
-
-          $extraVarsWslPath = (wsl wslpath -a "$($extraVarsFile -replace '\\', '/')").Trim()
-          if ($LASTEXITCODE -ne 0) { throw "Failed to convert extra vars file path to a WSL path (exit code: $LASTEXITCODE)" }
-          if (-not $extraVarsWslPath) { throw "Failed to convert extra vars file path to a WSL path" }
-
-          Log-Message "Installing Ansible collections..."
-          Log-Message "Running playbook against ${self.input.target_ip}..."
-          Invoke-CheckedNative -Script {
-            wsl bash -lc "export ANSIBLE_GALAXY_IGNORE_CERTS=true; export ANSIBLE_FORCE_COLOR=true; cd '$wslpath' && ansible-galaxy collection install --ignore-certs -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsWslPath' 2>&1" | ForEach-Object {
-              Log-Message $_
-            }
-          } -ErrorMessage "Ansible provisioning failed"
-        }
-      } finally {
-        if (Test-Path $extraVarsFile) {
-          Log-Message "Cleaning up temporary files..."
-          Remove-Item -Path $extraVarsFile -Force
-        }
-      }
-
-      Log-Message "================================================================================================"
-      Log-Message "ANSIBLE PROVISIONING COMPLETED SUCCESSFULLY"
-      Log-Message "================================================================================================"
-      Log-Message "Full log saved to: terraform-provision.log"
-    EOT
+    interpreter = ["PowerShell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]
+    command     = "& \"${path.module}/scripts/provision-applications.ps1\" -TargetIp \"${self.input.target_ip}\" -AnsiblePlaybookPath \"${var.ansible_playbook_path}\""
 
     environment = {
       ANSIBLE_WIN_USER     = nonsensitive(var.vm_admin_username)
       ANSIBLE_WIN_PASSWORD = nonsensitive(var.vm_admin_password)
       SQL_ADMIN_USERNAME   = nonsensitive(var.sql_admin_username)
       SQL_ADMIN_PASSWORD   = nonsensitive(var.sql_admin_password)
+      AZ_VM_NAME           = self.input.vm_name
+      AZ_RESOURCE_GROUP    = azurerm_resource_group.main.name
     }
-
-    interpreter = ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
   }
 
   depends_on = [

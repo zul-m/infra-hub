@@ -196,56 +196,25 @@ function Write-TerraformSummary {
     Write-TerraformResourceList -Title "Destroyed" -Resources $Summary.DestroyedResources
 }
 
-function Get-TerraformStageLabel {
+function Get-LiveAnsibleTaskFromLog {
     param(
-        [string]$ResourceName
+        [string]$LogPath
     )
 
-    if ([string]::IsNullOrWhiteSpace($ResourceName)) {
-        return "Applying infrastructure changes"
-    }
-
-    switch -Wildcard ($ResourceName) {
-        "azurerm_resource_group.*" { return "Creating resource group" }
-        "azurerm_virtual_network.*" { return "Configuring virtual network" }
-        "azurerm_subnet.*" { return "Configuring virtual network" }
-        "azurerm_network_security_group.*" { return "Configuring network security" }
-        "azurerm_network_security_rule.*" { return "Configuring network security" }
-        "azurerm_subnet_network_security_group_association.*" { return "Attaching network security rules" }
-        "azurerm_public_ip.*" { return "Allocating public IP" }
-        "azurerm_network_interface.*" { return "Configuring VM network interface" }
-        "azurerm_windows_virtual_machine.*" { return "Creating Windows virtual machine" }
-        "azurerm_virtual_machine_extension.winrm_https" { return "Configuring WinRM over HTTPS" }
-        "azurerm_dev_test_global_vm_shutdown_schedule.*" { return "Configuring auto-shutdown schedule" }
-        "terraform_data.install_applications" { return "Installing applications (SQL Server, SSMS, Azure CLI, Notepad++)" }
-        default { return "Applying infrastructure changes" }
-    }
-}
-
-function Get-LocalExecStageLabel {
-    param(
-        [string]$ResourceName,
-        [string]$Message
-    )
-
-    if ($ResourceName -ne "terraform_data.install_applications") {
+    if ([string]::IsNullOrWhiteSpace($LogPath) -or -not (Test-Path $LogPath)) {
         return $null
     }
 
-    if ($Message -match "ANSIBLE PROVISIONING STARTED") {
-        return "Installing applications (SQL Server, SSMS, Azure CLI, Notepad++)"
+    $taskLine = Get-Content -Path $LogPath -Tail 120 -ErrorAction SilentlyContinue |
+        Where-Object { $_ -match '(?i)^TASK \[(?<task>[^\]]+)\]' } |
+        Select-Object -Last 1
+
+    if (-not $taskLine) {
+        return $null
     }
-    if ($Message -match "Installing Ansible collections") {
-        return "Preparing Ansible collections"
-    }
-    if ($Message -match "Running playbook against") {
-        return "Applying application playbook"
-    }
-    if ($Message -match "Provisioning attempt") {
-        return "Provisioning applications"
-    }
-    if ($Message -match "ANSIBLE PROVISIONING COMPLETED SUCCESSFULLY") {
-        return "Application provisioning completed"
+
+    if ($taskLine -match '(?i)^TASK \[(?<task>[^\]]+)\]') {
+        return ("[Ansible] {0}" -f $matches.task.Trim())
     }
 
     return $null
@@ -285,12 +254,28 @@ function Invoke-TerraformMinimal {
 
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
+    $liveProvisionLog = Join-Path (Get-Location).Path "terraform-provision.log"
+
+    # Prevent stale Ansible task labels from a previous run.
+    if ($DisplayName -eq "apply" -and (Test-Path $liveProvisionLog)) {
+        Clear-Content -Path $liveProvisionLog -ErrorAction SilentlyContinue
+    }
 
     $heartbeatTicks = 0
     while (-not $process.WaitForExit(30000)) {
         $heartbeatTicks++
         $elapsedSeconds = $heartbeatTicks * 30
-        Write-Host ("  Terraform still running... [{0}s elapsed]" -f $elapsedSeconds) -ForegroundColor DarkGray
+
+        $stageLabel = $null
+        if ($DisplayName -eq "apply") {
+            $stageLabel = Get-LiveAnsibleTaskFromLog -LogPath $liveProvisionLog
+        }
+
+        if ($stageLabel) {
+            Write-Host ("  Terraform {0}: {1}... [{2}s elapsed]" -f $DisplayName, $stageLabel, $elapsedSeconds) -ForegroundColor DarkGray
+        } else {
+            Write-Host ("  Terraform {0} in progress... [{1}s elapsed]" -f $DisplayName, $elapsedSeconds) -ForegroundColor DarkGray
+        }
     }
 
     $stdout = $stdoutTask.GetAwaiter().GetResult()

@@ -40,7 +40,7 @@
         reboot_timeout: 600
         post_reboot_delay: 30
 
-    - name: Install SQL Server 2022 Developer (mixed mode SQL auth)
+    - name: Install SQL Server 2022 Developer
       chocolatey.chocolatey.win_chocolatey:
         name: sql-server-2022
         state: present

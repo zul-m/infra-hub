@@ -13,7 +13,9 @@ vm-deploy/
   deploy.ps1
   .gitignore
   vm/
-    deploy-vm.ps1
+    scripts/
+      deploy-vm.ps1
+      provision-applications.ps1
     main.tf
     variables.tf
     outputs.tf

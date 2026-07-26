@@ -254,7 +254,7 @@ function Invoke-TerraformMinimal {
     while (-not $process.WaitForExit(30000)) {
         $heartbeatTicks++
         $elapsedSeconds = $heartbeatTicks * 30
-        Write-Host "  Terraform still running... [${elapsedSeconds}s elapsed]" -ForegroundColor DarkGray
+        Write-Host ("  Terraform {0} in progress... [{1}s elapsed]" -f $DisplayName, $elapsedSeconds) -ForegroundColor DarkGray
     }
 
     $stdout = $stdoutTask.GetAwaiter().GetResult()
