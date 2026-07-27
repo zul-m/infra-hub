@@ -156,87 +156,17 @@ resource "terraform_data" "install_applications" {
   ]
 
   provisioner "local-exec" {
-    command = <<-EOT
-      $user    = $env:ANSIBLE_WIN_USER
-      $pass    = $env:ANSIBLE_WIN_PASSWORD
-      $sqlUser = $env:SQL_ADMIN_USERNAME
-      $sqlPass = $env:SQL_ADMIN_PASSWORD
-
-      Write-Host ""
-      Write-Host "============================================================"
-      Write-Host "[install_applications] Ansible provisioning started"
-      Write-Host "============================================================"
-      Write-Host "[install_applications] Installing Ansible collections..."
-      Write-Host "[install_applications] Running playbook against ${self.input.target_ip}..."
-
-      function Invoke-CheckedNative {
-        param(
-          [scriptblock]$Script,
-          [string]$ErrorMessage
-        )
-
-        & $Script
-        if ($LASTEXITCODE -ne 0) {
-          throw "$ErrorMessage (exit code: $LASTEXITCODE)"
-        }
-      }
-
-      $extraVars = @{
-        ansible_connection                  = "winrm"
-        ansible_port                        = 5986
-        ansible_winrm_transport             = "ntlm"
-        ansible_winrm_server_cert_validation = "ignore"
-        ansible_user                        = $user
-        ansible_password                    = $pass
-        sql_admin_username                  = $sqlUser
-        sql_admin_password                  = $sqlPass
-      }
-
-      $extraVarsFile = [System.IO.Path]::GetTempFileName()
-      try {
-        $extraVars | ConvertTo-Json -Depth 5 -Compress | Set-Content -Path $extraVarsFile -Encoding utf8
-
-        if ($IsLinux -or $IsMacOS) {
-          # GitHub Actions / Linux: run ansible directly (no WSL needed)
-          Invoke-CheckedNative -Script {
-            bash -lc "export ANSIBLE_GALAXY_IGNORE_CERTS=true; ansible-galaxy collection install --ignore-certs -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsFile'"
-          } -ErrorMessage "Ansible provisioning failed"
-        } else {
-          # Windows: invoke ansible via WSL
-          Invoke-CheckedNative -Script {
-            icacls $extraVarsFile /inheritance:r /grant:r "$($env:USERNAME):F"
-          } -ErrorMessage "Failed to secure temporary extra vars file"
-          $cwd = (Get-Location).Path -replace '\\', '/'
-          $wslpath = (wsl wslpath -a "$cwd").Trim()
-          if ($LASTEXITCODE -ne 0) { throw "Failed to convert working directory to a WSL path (exit code: $LASTEXITCODE)" }
-          if (-not $wslpath) { throw "Failed to convert working directory to a WSL path" }
-
-          $extraVarsWslPath = (wsl wslpath -a "$($extraVarsFile -replace '\\', '/')").Trim()
-          if ($LASTEXITCODE -ne 0) { throw "Failed to convert extra vars file path to a WSL path (exit code: $LASTEXITCODE)" }
-          if (-not $extraVarsWslPath) { throw "Failed to convert extra vars file path to a WSL path" }
-
-          Invoke-CheckedNative -Script {
-            wsl bash -lc "export ANSIBLE_GALAXY_IGNORE_CERTS=true; cd '$wslpath' && ansible-galaxy collection install --ignore-certs -r ansible/requirements.yml && ansible-playbook '${var.ansible_playbook_path}' -i '${self.input.target_ip},' --extra-vars '@$extraVarsWslPath'"
-          } -ErrorMessage "Ansible provisioning failed"
-        }
-      } finally {
-        if (Test-Path $extraVarsFile) {
-          Remove-Item -Path $extraVarsFile -Force
-        }
-      }
-
-      Write-Host "============================================================"
-      Write-Host "[install_applications] Completed."
-    EOT
+    interpreter = ["PowerShell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]
+    command     = "& \"${path.module}/scripts/provision-applications.ps1\" -TargetIp \"${self.input.target_ip}\" -AnsiblePlaybookPath \"${var.ansible_playbook_path}\""
 
     environment = {
       ANSIBLE_WIN_USER     = nonsensitive(var.vm_admin_username)
       ANSIBLE_WIN_PASSWORD = nonsensitive(var.vm_admin_password)
       SQL_ADMIN_USERNAME   = nonsensitive(var.sql_admin_username)
       SQL_ADMIN_PASSWORD   = nonsensitive(var.sql_admin_password)
+      AZ_VM_NAME           = self.input.vm_name
+      AZ_RESOURCE_GROUP    = azurerm_resource_group.main.name
     }
-
-    interpreter = ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
   }
 
   depends_on = [

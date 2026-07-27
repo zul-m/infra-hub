@@ -1,7 +1,9 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const inputPath = process.argv[2] ?? "copilot-output.txt";
 const outputPath = process.argv[3] ?? "review.json";
+
+const ALLOWED_SEVERITIES = new Set(["high", "medium", "low"]);
 
 function parseDirectJson(text) {
   const trimmed = text.trim();
@@ -102,21 +104,96 @@ function isValidReviewPayload(payload) {
     return false;
   }
 
+  for (const comment of payload.comments) {
+    if (!comment || typeof comment !== "object" || Array.isArray(comment)) {
+      return false;
+    }
+
+    if (typeof comment.path !== "string" || comment.path.trim().length === 0) {
+      return false;
+    }
+
+    if (!Number.isInteger(comment.line) || comment.line <= 0) {
+      return false;
+    }
+
+    if (typeof comment.body !== "string" || comment.body.trim().length === 0) {
+      return false;
+    }
+
+    if (
+      comment.severity !== undefined &&
+      (typeof comment.severity !== "string" || !ALLOWED_SEVERITIES.has(comment.severity))
+    ) {
+      return false;
+    }
+  }
+
   return true;
 }
 
-const raw = readFileSync(inputPath, "utf8");
+function parseCandidate(raw) {
+  return (
+    parseDirectJson(raw) ??
+    extractFromCodeFence(raw) ??
+    extractByBalancedBraces(raw)
+  );
+}
 
-const parsed =
-  parseDirectJson(raw) ??
-  extractFromCodeFence(raw) ??
-  extractByBalancedBraces(raw);
+function safePreview(text, maxLength = 800) {
+  return text.replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+const sources = [];
+
+if (existsSync(outputPath)) {
+  const raw = readFileSync(outputPath, "utf8");
+  if (raw.trim().length > 0) {
+    sources.push({ name: outputPath, raw });
+  }
+}
+
+if (existsSync(inputPath)) {
+  const raw = readFileSync(inputPath, "utf8");
+  if (raw.trim().length > 0) {
+    sources.push({ name: inputPath, raw });
+  }
+}
+
+if (sources.length === 0) {
+  throw new Error(
+    `No extraction sources found. Checked ${outputPath} and ${inputPath}.`,
+  );
+}
+
+let parsed = null;
+let parsedFrom = null;
+
+for (const source of sources) {
+  const candidate = parseCandidate(source.raw);
+  if (isValidReviewPayload(candidate)) {
+    parsed = candidate;
+    parsedFrom = source.name;
+    break;
+  }
+}
 
 if (!isValidReviewPayload(parsed)) {
+  for (const source of sources) {
+    const candidate = parseCandidate(source.raw);
+    process.stderr.write(`Extraction debug for ${source.name}:\n`);
+    process.stderr.write(`- Raw length: ${source.raw.length}\n`);
+    process.stderr.write(`- Raw preview: ${safePreview(source.raw)}\n`);
+    process.stderr.write(`- Parsed candidate: ${JSON.stringify(candidate, null, 2)}\n`);
+    process.stderr.write(`- Valid payload: ${isValidReviewPayload(candidate)}\n`);
+  }
+
   throw new Error(
-    "Could not extract a valid review JSON object with summary/comments from Copilot output.",
+    "Could not extract a valid review JSON. Expected format: { summary: string, comments: [{ path: string, line: number, body: string, severity?: high|medium|low }] }.",
   );
 }
 
 writeFileSync(outputPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-process.stdout.write(`Wrote validated review JSON to ${outputPath}.\n`);
+process.stdout.write(
+  `Wrote validated review JSON to ${outputPath} (source: ${parsedFrom}).\n`,
+);

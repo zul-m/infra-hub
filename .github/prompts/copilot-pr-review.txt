@@ -25,3 +25,7 @@ Rules:
 - Return at most 8 comments.
 - If there are no actionable findings, return an empty comments array.
 - The response must be valid JSON with double quotes and no surrounding markdown fences.
+- Output only the JSON object, with no extra prose before or after it.
+- Use exactly the top-level keys "summary" and "comments".
+- Every comment must include "path", "line", and "body".
+- If "severity" is included, it must be one of: "high", "medium", "low".

@@ -34,6 +34,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+trap [System.OperationCanceledException] {
+    return
+}
 
 function Ensure-AzLogin {
     if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
@@ -78,13 +81,222 @@ function Assert-TerraformInstalled {
     }
 }
 
+function Get-TerraformResourceSummary {
+    param(
+        [string]$Action,
+        [string]$StdOut,
+        [string]$StdErr
+    )
+
+    $combined = @($StdOut, $StdErr) -join "`n"
+    $created = New-Object System.Collections.Generic.List[string]
+    $changed = New-Object System.Collections.Generic.List[string]
+    $destroyed = New-Object System.Collections.Generic.List[string]
+
+    $lines = $combined -split "`r?`n"
+    foreach ($line in $lines) {
+        if ($line -match '^\s*#\s+(?<resource>\S+)\s+will be created') {
+            $created.Add($matches.resource)
+            continue
+        }
+        if ($line -match '^\s*#\s+(?<resource>\S+)\s+will be updated in-place') {
+            $changed.Add($matches.resource)
+            continue
+        }
+        if ($line -match '^\s*#\s+(?<resource>\S+)\s+will be destroyed') {
+            $destroyed.Add($matches.resource)
+            continue
+        }
+        if ($line -match '^(?<resource>[^:]+):\s+Creation complete') {
+            $created.Add($matches.resource.Trim())
+            continue
+        }
+        if ($line -match '^(?<resource>[^:]+):\s+Modifications complete') {
+            $changed.Add($matches.resource.Trim())
+            continue
+        }
+        if ($line -match '^(?<resource>[^:]+):\s+Destruction complete') {
+            $destroyed.Add($matches.resource.Trim())
+            continue
+        }
+    }
+
+    $created = @($created | Select-Object -Unique)
+    $changed = @($changed | Select-Object -Unique)
+    $destroyed = @($destroyed | Select-Object -Unique)
+
+    $add = 0
+    $chg = 0
+    $des = 0
+
+    $planMatch = [regex]::Match($combined, 'Plan:\s+(?<add>\d+)\s+to add,\s+(?<change>\d+)\s+to change,\s+(?<destroy>\d+)\s+to destroy\.')
+    $applyMatch = [regex]::Match($combined, 'Apply complete!\s+Resources:\s+(?<add>\d+)\s+added,\s+(?<change>\d+)\s+changed,\s+(?<destroy>\d+)\s+destroyed\.')
+
+    if ($planMatch.Success) {
+        $add = [int]$planMatch.Groups['add'].Value
+        $chg = [int]$planMatch.Groups['change'].Value
+        $des = [int]$planMatch.Groups['destroy'].Value
+    } elseif ($applyMatch.Success) {
+        $add = [int]$applyMatch.Groups['add'].Value
+        $chg = [int]$applyMatch.Groups['change'].Value
+        $des = [int]$applyMatch.Groups['destroy'].Value
+    } else {
+        $add = $created.Count
+        $chg = $changed.Count
+        $des = $destroyed.Count
+    }
+
+    return [pscustomobject]@{
+        Action             = $Action
+        AddedCount         = $add
+        ChangedCount       = $chg
+        DestroyedCount     = $des
+        CreatedResources   = @($created)
+        ChangedResources   = @($changed)
+        DestroyedResources = @($destroyed)
+    }
+}
+
+function Write-TerraformResourceList {
+    param(
+        [string]$Title,
+        [string[]]$Resources,
+        [int]$MaxItems = 12
+    )
+
+    $list = @($Resources | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    if ($list.Count -eq 0) {
+        return
+    }
+
+    Write-Host ("  {0}:" -f $Title) -ForegroundColor DarkGray
+    $display = $list | Select-Object -First $MaxItems
+    foreach ($resource in $display) {
+        Write-Host ("    - {0}" -f $resource) -ForegroundColor Gray
+    }
+
+    if ($list.Count -gt $MaxItems) {
+        $remaining = $list.Count - $MaxItems
+        Write-Host ("    ... and {0} more" -f $remaining) -ForegroundColor Gray
+    }
+}
+
+function Write-TerraformSummary {
+    param(
+        [pscustomobject]$Summary
+    )
+
+    Write-Host ""
+    Write-Host "  Terraform completed." -ForegroundColor Green
+    Write-Host ("  Action: {0}" -f $Summary.Action) -ForegroundColor Green
+    Write-Host ("  Changes: +{0}  ~{1}  -{2}" -f $Summary.AddedCount, $Summary.ChangedCount, $Summary.DestroyedCount) -ForegroundColor Green
+
+    Write-TerraformResourceList -Title "Provisioned" -Resources $Summary.CreatedResources
+    Write-TerraformResourceList -Title "Updated" -Resources $Summary.ChangedResources
+    Write-TerraformResourceList -Title "Destroyed" -Resources $Summary.DestroyedResources
+}
+
+function Get-LiveAnsibleTaskFromLog {
+    param(
+        [string]$LogPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LogPath) -or -not (Test-Path $LogPath)) {
+        return $null
+    }
+
+    $taskLine = Get-Content -Path $LogPath -Tail 120 -ErrorAction SilentlyContinue |
+        Where-Object { $_ -match '(?i)^TASK \[(?<task>[^\]]+)\]' } |
+        Select-Object -Last 1
+
+    if (-not $taskLine) {
+        return $null
+    }
+
+    if ($taskLine -match '(?i)^TASK \[(?<task>[^\]]+)\]') {
+        return ("[Ansible] {0}" -f $matches.task.Trim())
+    }
+
+    return $null
+}
+
+function Invoke-TerraformMinimal {
+    param(
+        [string[]]$Arguments,
+        [string]$DisplayName
+    )
+
+    Write-Host "  Terraform: $DisplayName" -ForegroundColor Cyan
+
+    $terraformPath = (Get-Command terraform -ErrorAction Stop).Source
+    $allArgs = @($Arguments + @("-no-color"))
+    $quotedArgs = $allArgs | ForEach-Object {
+        if ($_ -match '[\s"]') {
+            '"' + ($_ -replace '"', '\\"') + '"'
+        } else {
+            $_
+        }
+    }
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $terraformPath
+    $startInfo.Arguments = ($quotedArgs -join " ")
+    $startInfo.WorkingDirectory = (Get-Location).Path
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.EnvironmentVariables["TF_IN_AUTOMATION"] = "1"
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $process.Start() | Out-Null
+
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $liveProvisionLog = Join-Path (Get-Location).Path "terraform-provision.log"
+
+    # Prevent stale Ansible task labels from a previous run.
+    if ($DisplayName -eq "apply" -and (Test-Path $liveProvisionLog)) {
+        Clear-Content -Path $liveProvisionLog -ErrorAction SilentlyContinue
+    }
+
+    $heartbeatTicks = 0
+    while (-not $process.WaitForExit(30000)) {
+        $heartbeatTicks++
+        $elapsedSeconds = $heartbeatTicks * 30
+
+        $stageLabel = $null
+        if ($DisplayName -eq "apply") {
+            $stageLabel = Get-LiveAnsibleTaskFromLog -LogPath $liveProvisionLog
+        }
+
+        if ($stageLabel) {
+            Write-Host ("  Terraform {0}: {1}... [{2}s elapsed]" -f $DisplayName, $stageLabel, $elapsedSeconds) -ForegroundColor DarkGray
+        } else {
+            Write-Host ("  Terraform {0} in progress... [{1}s elapsed]" -f $DisplayName, $elapsedSeconds) -ForegroundColor DarkGray
+        }
+    }
+
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+
+    $summary = Get-TerraformResourceSummary -Action $DisplayName -StdOut $stdout -StdErr $stderr
+    return [pscustomobject]@{
+        ExitCode = $process.ExitCode
+        StdOut   = $stdout
+        StdErr   = $stderr
+        Summary  = $summary
+    }
+}
+
 function Get-TfvarsQuotedValue {
     param(
         [string]$Key,
         [string]$Guidance
     )
 
-    $tfvarsPath = Join-Path $PSScriptRoot "terraform.tfvars"
+    $tfvarsPath = Join-Path (Split-Path $PSScriptRoot -Parent) "terraform.tfvars"
     if (-not (Test-Path $tfvarsPath)) {
         throw "terraform.tfvars was not found at '$tfvarsPath'. This file must define $Key for preflight checks."
     }
@@ -252,7 +464,10 @@ function Select-Option {
                     return $Options[$idx]
                 }
             }
-            Escape { Write-Host "`n  Cancelled.`n"; exit 0 }
+            Escape {
+                Write-Host "`n  Cancelled.`n"
+                throw [System.OperationCanceledException]::new("VM deployment selection cancelled by user.")
+            }
         }
     }
 }
@@ -313,7 +528,7 @@ if ($Action -eq "destroy" -and -not $AutoApprove) {
     $ok = $Host.UI.PromptForChoice("  Confirm destroy", "  This will DELETE all VM resources. Continue?", @("&Yes", "&No"), 1)
     if ($ok -ne 0) {
         Write-Host "  Cancelled.`n"
-        exit 0
+        throw [System.OperationCanceledException]::new("VM destroy cancelled by user.")
     }
     Write-Host ""
 }
@@ -334,7 +549,7 @@ if ($AutoApprove -and $Action -ne "plan") {
     $tfArgs += "-auto-approve"
 }
 
-Push-Location $PSScriptRoot
+Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
     Assert-TerraformInstalled
     Ensure-AzLogin
@@ -343,15 +558,32 @@ try {
     Test-AzVmImageSkuAvailable -Image $img -Location $location -Action $Action
     Test-AzVmQuotaAvailable -Location $location -VmSize $VmSize -Action $Action
 
-    & terraform init -input=false
-    if ($LASTEXITCODE -ne 0) {
-        throw "terraform init exited with code $LASTEXITCODE"
+    $initResult = Invoke-TerraformMinimal -Arguments @("init", "-input=false") -DisplayName "init"
+    if ($initResult.ExitCode -ne 0) {
+        if ($initResult.StdErr) {
+            Write-Host ""
+            Write-Host "  Error Output:" -ForegroundColor Red
+            Write-Host $initResult.StdErr -ForegroundColor Red
+        }
+        throw "terraform init exited with code $($initResult.ExitCode)"
     }
 
-    & terraform @tfArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "terraform $Action exited with code $LASTEXITCODE"
+    $actionResult = Invoke-TerraformMinimal -Arguments $tfArgs -DisplayName $Action
+    if ($actionResult.ExitCode -ne 0) {
+        if ($actionResult.StdErr) {
+            Write-Host ""
+            Write-Host "  Error Output:" -ForegroundColor Red
+            Write-Host $actionResult.StdErr -ForegroundColor Red
+        }
+        if ($actionResult.StdOut) {
+            Write-Host ""
+            Write-Host "  Output:" -ForegroundColor Yellow
+            Write-Host $actionResult.StdOut -ForegroundColor Yellow
+        }
+        throw "terraform $Action exited with code $($actionResult.ExitCode)"
     }
+
+    Write-TerraformSummary -Summary $actionResult.Summary
 } finally {
     Pop-Location
 }
