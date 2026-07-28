@@ -473,11 +473,11 @@ function Select-Option {
 }
 
 $Profiles = [ordered]@{
-    win11 = @{ label = "Windows 11 24H2 Pro  (win11-24h2-pro)"; publisher = "MicrosoftWindowsDesktop"; offer = "Windows-11"; sku = "win11-24h2-pro"; version = "latest" }
-    win10 = @{ label = "Windows 10 22H2 Pro  (win10-22h2-pro-g2)"; publisher = "MicrosoftWindowsDesktop"; offer = "Windows-10"; sku = "win10-22h2-pro-g2"; version = "latest" }
-    win19 = @{ label = "Windows Server 2019  (2019-datacenter-gensecond)"; publisher = "MicrosoftWindowsServer"; offer = "WindowsServer"; sku = "2019-datacenter-gensecond"; version = "latest" }
-    win22 = @{ label = "Windows Server 2022  (2022-datacenter-g2)"; publisher = "MicrosoftWindowsServer"; offer = "WindowsServer"; sku = "2022-datacenter-g2"; version = "latest" }
-    win25 = @{ label = "Windows Server 2025  (2025-datacenter-g2)"; publisher = "MicrosoftWindowsServer"; offer = "WindowsServer"; sku = "2025-datacenter-g2"; version = "latest" }
+    win11 = @{ label = "Windows 11 24H2 Pro"; publisher = "MicrosoftWindowsDesktop"; offer = "Windows-11"; sku = "win11-24h2-pro"; version = "latest" }
+    win10 = @{ label = "Windows 10 22H2 Pro"; publisher = "MicrosoftWindowsDesktop"; offer = "Windows-10"; sku = "win10-22h2-pro-g2"; version = "latest" }
+    win19 = @{ label = "Windows Server 2019"; publisher = "MicrosoftWindowsServer"; offer = "WindowsServer"; sku = "2019-datacenter-gensecond"; version = "latest" }
+    win22 = @{ label = "Windows Server 2022"; publisher = "MicrosoftWindowsServer"; offer = "WindowsServer"; sku = "2022-datacenter-g2"; version = "latest" }
+    win25 = @{ label = "Windows Server 2025"; publisher = "MicrosoftWindowsServer"; offer = "WindowsServer"; sku = "2025-datacenter-g2"; version = "latest" }
 }
 
 Write-Host ""
