@@ -4,6 +4,8 @@ on:
   pull_request_target:
     types:
       - opened
+      - reopened
+      - ready_for_review
 
 concurrency:
   group: copilot-pr-review-${{ github.event.pull_request.number }}
@@ -11,95 +13,72 @@ concurrency:
 
 permissions:
   contents: read
-  issues: write
   pull-requests: write
+  copilot-requests: write
 
 jobs:
-  notify:
+  review:
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
 
     steps:
-      - name: Post PR opened notes
-        uses: actions/github-script@v8
+      - name: Checkout base repository
+        uses: actions/checkout@v6
         with:
-          script: |
-            const marker = "<!-- pr-opened-note -->";
-            const issue_number = context.payload.pull_request.number;
-            const pull_number = context.payload.pull_request.number;
-            const { owner, repo } = context.repo;
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
 
-            const comments = await github.paginate(
-              github.rest.issues.listComments,
-              {
-                owner,
-                repo,
-                issue_number,
-                per_page: 100,
-              },
-            );
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-            const postedBodies = new Set(
-              comments
-                .filter((comment) => comment.user?.login === "github-actions[bot]")
-                .map((comment) => comment.body ?? ""),
-            );
+      - name: Install Copilot CLI
+        run: |
+          for attempt in 1 2 3; do
+            npm install -g @github/copilot && break
+            if [ "$attempt" -eq 3 ]; then
+              echo "Failed to install @github/copilot after 3 attempts."
+              exit 1
+            fi
+            echo "Install failed (attempt $attempt). Retrying in 5s..."
+            sleep 5
+          done
 
-            const alreadyPostedOverview = comments.some(
-              (comment) =>
-                comment.user?.login === "github-actions[bot]" &&
-                comment.body?.includes(marker),
-            );
+      - name: Build PR review context
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/build-pr-context.mjs > pr-context.json
 
-            if (!alreadyPostedOverview) {
-              const body = [
-                marker,
-                "Thanks for opening this PR.",
-                "",
-                "A maintainer will review this change shortly.",
-              ].join("\n");
+      - name: Generate review findings with Copilot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COPILOT_MODEL: gpt-5.2
+        run: |
+          for attempt in 1 2 3; do
+            copilot -s --no-ask-user \
+              --allow-tool='read(.github/prompts/copilot-pr-review.txt),read(pr-context.json),write(review.json)' \
+              -p "Read .github/prompts/copilot-pr-review.txt and pr-context.json, then follow the prompt file exactly and write the final JSON object to review.json." \
+              > copilot-output.txt && break
+            if [ "$attempt" -eq 3 ]; then
+              echo "Copilot generation failed after 3 attempts."
+              exit 1
+            fi
+            echo "Copilot generation failed (attempt $attempt). Retrying in 10s..."
+            sleep 10
+          done
 
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number,
-                body,
-              });
-            }
+      - name: Extract and validate review JSON
+        run: node .github/scripts/extract-review-json.mjs copilot-output.txt review.json
 
-            const files = await github.paginate(
-              github.rest.pulls.listFiles,
-              {
-                owner,
-                repo,
-                pull_number,
-                per_page: 100,
-              },
-            );
+      - name: Post inline review comments
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/post-pr-review.mjs
 
-            for (const file of files) {
-              const fileMarker = `<!-- pr-opened-file-note:${file.filename} -->`;
-              const alreadyPostedForFile = [...postedBodies].some((body) =>
-                body.includes(fileMarker),
-              );
-
-              if (alreadyPostedForFile) {
-                continue;
-              }
-
-              const body = [
-                fileMarker,
-                `File changed: \`${file.filename}\``,
-                "",
-                `Status: ${file.status}`,
-                `Additions: ${file.additions}, Deletions: ${file.deletions}`,
-              ].join("\n");
-
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number,
-                body,
-              });
-            }
-
-            core.info(`Posted PR-opened notes for ${files.length} file(s).`);
+      - name: Publish review summary
+        if: always()
+        run: |
+          if [ -f review-summary.md ]; then
+            cat review-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
