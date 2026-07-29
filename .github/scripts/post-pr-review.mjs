@@ -27,6 +27,8 @@ if (!pullRequest?.number) {
 const [owner, repo] = repository.split("/");
 const context = JSON.parse(readFileSync("pr-context.json", "utf8"));
 const review = JSON.parse(readFileSync("review.json", "utf8"));
+const PR_REVIEW_BLOCK_START = "<!-- copilot-pr-review:start -->";
+const PR_REVIEW_BLOCK_END = "<!-- copilot-pr-review:end -->";
 
 function normalizeBody(body, severity) {
   const prefix = severity ? `**${severity.toUpperCase()}**\n\n` : "";
@@ -78,6 +80,58 @@ async function getExistingComments() {
   );
 }
 
+function stripManagedReviewBlock(body) {
+  if (typeof body !== "string" || body.length === 0) {
+    return "";
+  }
+
+  const start = body.indexOf(PR_REVIEW_BLOCK_START);
+  const end = body.indexOf(PR_REVIEW_BLOCK_END);
+
+  if (start === -1 || end === -1 || end < start) {
+    return body.trim();
+  }
+
+  const before = body.slice(0, start).trim();
+  const after = body.slice(end + PR_REVIEW_BLOCK_END.length).trim();
+
+  if (before && after) {
+    return `${before}\n\n${after}`;
+  }
+
+  return (before || after).trim();
+}
+
+function buildManagedReviewBlock(summaryText, inlineCommentCount) {
+  const lines = [
+    PR_REVIEW_BLOCK_START,
+    "## Copilot PR Review",
+    "",
+    summaryText || "No summary returned.",
+    "",
+    `Inline comments posted this run: ${inlineCommentCount}`,
+    PR_REVIEW_BLOCK_END,
+  ];
+
+  return lines.join("\n");
+}
+
+async function getPullRequest() {
+  return githubRequest(`/repos/${owner}/${repo}/pulls/${pullRequest.number}`);
+}
+
+async function updatePullRequestBody(newBody) {
+  return githubRequest(`/repos/${owner}/${repo}/pulls/${pullRequest.number}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      body: newBody,
+    }),
+  });
+}
+
 const summary = typeof review.summary === "string" ? review.summary.trim() : "";
 const requestedComments = Array.isArray(review.comments) ? review.comments : [];
 const allowedLinesByPath = getAllowedLinesByPath(context.files ?? []);
@@ -113,6 +167,16 @@ const summaryLines = [
 ];
 
 writeFileSync("review-summary.md", `${summaryLines.join("\n")}\n`, "utf8");
+
+const currentPr = await getPullRequest();
+const preservedBody = stripManagedReviewBlock(currentPr?.body ?? "");
+const managedReviewBlock = buildManagedReviewBlock(summary, filteredComments.length);
+const updatedBody = preservedBody
+  ? `${managedReviewBlock}\n\n${preservedBody}`
+  : managedReviewBlock;
+
+await updatePullRequestBody(updatedBody);
+process.stdout.write("Updated PR description with Copilot review block.\n");
 
 if (filteredComments.length === 0) {
   process.stdout.write("No new inline review comments to post.\n");
