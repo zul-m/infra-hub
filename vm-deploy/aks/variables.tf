@@ -35,10 +35,22 @@ variable "linux_node_count" {
   default     = 1
 }
 
-variable "linux_node_vm_size" {
-  description = "Linux system node pool VM size"
+variable "node_vm_size" {
+  description = "Shared VM size used by Linux and Windows node pools unless an OS-specific override is set"
   type        = string
   default     = "Standard_D4s_v3"
+
+  validation {
+    condition     = length(trimspace(var.node_vm_size)) > 0
+    error_message = "node_vm_size must not be empty."
+  }
+}
+
+variable "linux_node_vm_size" {
+  description = "Optional Linux node pool VM size override"
+  type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "windows_node_count" {
@@ -48,9 +60,10 @@ variable "windows_node_count" {
 }
 
 variable "windows_node_vm_size" {
-  description = "Windows user node pool VM size"
+  description = "Optional Windows node pool VM size override"
   type        = string
-  default     = "Standard_D4_v3"
+  default     = null
+  nullable    = true
 }
 
 variable "windows_node_pool_name" {

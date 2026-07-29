@@ -1,5 +1,7 @@
 locals {
   workspace_name = var.log_analytics_workspace_name != null && length(trimspace(var.log_analytics_workspace_name)) > 0 ? trimspace(var.log_analytics_workspace_name) : "${var.cluster_name}-law"
+  linux_node_vm_size_effective = var.linux_node_vm_size != null && length(trimspace(var.linux_node_vm_size)) > 0 ? trimspace(var.linux_node_vm_size) : var.node_vm_size
+  windows_node_vm_size_effective = var.windows_node_vm_size != null && length(trimspace(var.windows_node_vm_size)) > 0 ? trimspace(var.windows_node_vm_size) : var.node_vm_size
   ingress_values = {
     controller = {
       replicaCount = 2
@@ -84,7 +86,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
 
   default_node_pool {
     name                 = "system"
-    vm_size              = var.linux_node_vm_size
+    vm_size              = local.linux_node_vm_size_effective
     node_count           = var.linux_node_count
     type                 = "VirtualMachineScaleSets"
     orchestrator_version = var.kubernetes_version
@@ -114,7 +116,7 @@ resource "azurerm_kubernetes_cluster_node_pool" "windows" {
   count                 = var.windows_node_count > 0 ? 1 : 0
   name                  = var.windows_node_pool_name
   kubernetes_cluster_id = azurerm_kubernetes_cluster.aks.id
-  vm_size               = var.windows_node_vm_size
+  vm_size               = local.windows_node_vm_size_effective
   node_count            = var.windows_node_count
   orchestrator_version  = var.kubernetes_version
   os_type               = "Windows"
