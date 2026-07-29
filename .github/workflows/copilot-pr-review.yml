@@ -71,7 +71,7 @@ jobs:
       - name: Extract and validate review JSON
         run: node .github/scripts/extract-review-json.mjs copilot-output.txt review.json
 
-      - name: Post inline review comments
+      - name: Post review comments and update PR description
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node .github/scripts/post-pr-review.mjs
