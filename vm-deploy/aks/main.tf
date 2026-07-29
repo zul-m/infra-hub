@@ -1,7 +1,8 @@
 locals {
   workspace_name = var.log_analytics_workspace_name != null && length(trimspace(var.log_analytics_workspace_name)) > 0 ? trimspace(var.log_analytics_workspace_name) : "${var.cluster_name}-law"
-  linux_node_vm_size_effective = var.linux_node_vm_size != null && length(trimspace(var.linux_node_vm_size)) > 0 ? trimspace(var.linux_node_vm_size) : var.node_vm_size
-  windows_node_vm_size_effective = var.windows_node_vm_size != null && length(trimspace(var.windows_node_vm_size)) > 0 ? trimspace(var.windows_node_vm_size) : var.node_vm_size
+  shared_node_vm_size = trimspace(var.node_vm_size)
+  linux_node_vm_size_effective = var.linux_node_vm_size != null && length(trimspace(var.linux_node_vm_size)) > 0 ? trimspace(var.linux_node_vm_size) : local.shared_node_vm_size
+  windows_node_vm_size_effective = var.windows_node_vm_size != null && length(trimspace(var.windows_node_vm_size)) > 0 ? trimspace(var.windows_node_vm_size) : local.shared_node_vm_size
   ingress_values = {
     controller = {
       replicaCount = 2
