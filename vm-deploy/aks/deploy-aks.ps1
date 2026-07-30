@@ -215,6 +215,37 @@ function Write-TerraformSummary {
     Write-TerraformResourceList -Title "Destroyed" -Resources $Summary.DestroyedResources
 }
 
+function Throw-TerraformFailure {
+    param(
+        [string]$Phase,
+        [pscustomobject]$Result
+    )
+
+    Write-Host "" -ForegroundColor Red
+    Write-Host ("  Terraform {0} failed (exit code {1})." -f $Phase, $Result.ExitCode) -ForegroundColor Red
+
+    $stdErr = if ($null -ne $Result.StdErr) { [string]$Result.StdErr } else { "" }
+    $stdOut = if ($null -ne $Result.StdOut) { [string]$Result.StdOut } else { "" }
+
+    if (-not [string]::IsNullOrWhiteSpace($stdErr)) {
+        Write-Host "" -ForegroundColor Red
+        Write-Host "  --- Terraform STDERR ---" -ForegroundColor Red
+        Write-Host $stdErr -ForegroundColor Red
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($stdOut)) {
+        $outLines = @($stdOut -split "`r?`n")
+        $tailCount = [Math]::Min(120, $outLines.Count)
+        Write-Host "" -ForegroundColor Yellow
+        Write-Host ("  --- Terraform STDOUT (last {0} lines) ---" -f $tailCount) -ForegroundColor Yellow
+        if ($tailCount -gt 0) {
+            Write-Host (($outLines | Select-Object -Last $tailCount) -join "`n") -ForegroundColor Yellow
+        }
+    }
+
+    throw "terraform $Phase exited with code $($Result.ExitCode)"
+}
+
 function Invoke-TerraformMinimal {
     param(
         [string[]]$Arguments,
@@ -345,6 +376,14 @@ function Select-Option {
 }
 
 function Get-DefaultAksLocation {
+    $aksTfvarsPath = Join-Path $PSScriptRoot "terraform.tfvars"
+    if (Test-Path $aksTfvarsPath) {
+        $aksMatch = Select-String -Path $aksTfvarsPath -Pattern '^\s*location\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
+        if ($aksMatch) {
+            return $aksMatch.Matches[0].Groups[1].Value
+        }
+    }
+
     $vmTfvarsPath = Join-Path (Join-Path $PSScriptRoot "..") "vm\terraform.tfvars"
     if (-not (Test-Path $vmTfvarsPath)) {
         return $null
@@ -358,8 +397,10 @@ function Get-DefaultAksLocation {
     return $match.Matches[0].Groups[1].Value
 }
 
+$locationResolvedFromDefault = $false
 if (-not $AksLocation) {
     $AksLocation = Get-DefaultAksLocation
+    $locationResolvedFromDefault = -not [string]::IsNullOrWhiteSpace($AksLocation)
 }
 
 Write-Host ""
@@ -435,7 +476,7 @@ if ($PSBoundParameters.ContainsKey("AksResourceGroup")) {
 if ($PSBoundParameters.ContainsKey("AksClusterName")) {
     $terraformArgs += @("-var", "cluster_name=$AksClusterName")
 }
-if ($PSBoundParameters.ContainsKey("AksLocation")) {
+if ($PSBoundParameters.ContainsKey("AksLocation") -or $locationResolvedFromDefault) {
     $terraformArgs += @("-var", "location=$AksLocation")
 }
 if ($PSBoundParameters.ContainsKey("AksKubernetesVersion")) {
@@ -505,12 +546,12 @@ try {
 
     $initResult = Invoke-TerraformMinimal -Arguments @("init", "-input=false") -DisplayName "init"
     if ($initResult.ExitCode -ne 0) {
-        throw "terraform init exited with code $($initResult.ExitCode)"
+        Throw-TerraformFailure -Phase "init" -Result $initResult
     }
 
     $actionResult = Invoke-TerraformMinimal -Arguments $terraformArgs -DisplayName $Action
     if ($actionResult.ExitCode -ne 0) {
-        throw "terraform $Action exited with code $($actionResult.ExitCode)"
+        Throw-TerraformFailure -Phase $Action -Result $actionResult
     }
 
     Write-TerraformSummary -Summary $actionResult.Summary
