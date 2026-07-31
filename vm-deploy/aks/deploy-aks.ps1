@@ -215,6 +215,72 @@ function Write-TerraformSummary {
     Write-TerraformResourceList -Title "Destroyed" -Resources $Summary.DestroyedResources
 }
 
+function Redact-TerraformOutput {
+    param(
+        [string]$Text
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $Text
+    }
+
+    $redacted = [string]$Text
+
+    $knownSecretValues = @(
+        $env:TF_VAR_windows_admin_password,
+        $env:TF_VAR_registry_password
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+
+    foreach ($secretValue in $knownSecretValues) {
+        $redacted = [regex]::Replace($redacted, [regex]::Escape([string]$secretValue), '[REDACTED]')
+    }
+
+    $redacted = [regex]::Replace(
+        $redacted,
+        '(?im)(\b(?:password|passwd|secret|token|api[_-]?key|client[_-]?secret|connection[_-]?string|access[_-]?key|private[_-]?key)\b\s*[:=]\s*)([^\r\n]+)',
+        '$1[REDACTED]'
+    )
+
+    $redacted = [regex]::Replace(
+        $redacted,
+        '(?im)("?(?:password|passwd|secret|token|api[_-]?key|client[_-]?secret|connection[_-]?string|access[_-]?key|private[_-]?key)"?\s*:\s*")([^"]+)("?)',
+        '$1[REDACTED]$3'
+    )
+
+    return $redacted
+}
+
+function Throw-TerraformFailure {
+    param(
+        [string]$Phase,
+        [pscustomobject]$Result
+    )
+
+    Write-Host "" -ForegroundColor Red
+    Write-Host ("  Terraform {0} failed (exit code {1})." -f $Phase, $Result.ExitCode) -ForegroundColor Red
+
+    $stdErr = if ($null -ne $Result.StdErr) { [string]$Result.StdErr } else { "" }
+    $stdOut = if ($null -ne $Result.StdOut) { [string]$Result.StdOut } else { "" }
+
+    if (-not [string]::IsNullOrWhiteSpace($stdErr)) {
+        Write-Host "" -ForegroundColor Red
+        Write-Host "  --- Terraform STDERR ---" -ForegroundColor Red
+        Write-Host (Redact-TerraformOutput -Text $stdErr) -ForegroundColor Red
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($stdOut)) {
+        $outLines = @($stdOut -split "`r?`n")
+        $tailCount = [Math]::Min(120, $outLines.Count)
+        Write-Host "" -ForegroundColor Yellow
+        Write-Host ("  --- Terraform STDOUT (last {0} lines) ---" -f $tailCount) -ForegroundColor Yellow
+        if ($tailCount -gt 0) {
+            Write-Host (Redact-TerraformOutput -Text (($outLines | Select-Object -Last $tailCount) -join "`n")) -ForegroundColor Yellow
+        }
+    }
+
+    throw "terraform $Phase exited with code $($Result.ExitCode)"
+}
+
 function Invoke-TerraformMinimal {
     param(
         [string[]]$Arguments,
@@ -345,12 +411,12 @@ function Select-Option {
 }
 
 function Get-DefaultAksLocation {
-    $vmTfvarsPath = Join-Path (Join-Path $PSScriptRoot "..") "vm\terraform.tfvars"
-    if (-not (Test-Path $vmTfvarsPath)) {
+    $rootTfvarsPath = Join-Path (Split-Path $PSScriptRoot -Parent) "terraform.tfvars"
+    if (-not (Test-Path $rootTfvarsPath)) {
         return $null
     }
 
-    $match = Select-String -Path $vmTfvarsPath -Pattern '^\s*location\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
+    $match = Select-String -Path $rootTfvarsPath -Pattern '^\s*location\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
     if (-not $match) {
         return $null
     }
@@ -358,8 +424,10 @@ function Get-DefaultAksLocation {
     return $match.Matches[0].Groups[1].Value
 }
 
+$locationResolvedFromDefault = $false
 if (-not $AksLocation) {
     $AksLocation = Get-DefaultAksLocation
+    $locationResolvedFromDefault = -not [string]::IsNullOrWhiteSpace($AksLocation)
 }
 
 Write-Host ""
@@ -384,7 +452,7 @@ if ($AksRegistryServer -and $AksRegistryUsername -and $AksRegistryPassword) {
 }
 
 if ($Action -eq "apply" -and $AksWindowsNodeCount -gt 0 -and -not $AksWindowsAdminPassword) {
-    $tfvarsPath = Join-Path $PSScriptRoot "terraform.tfvars"
+    $tfvarsPath = Join-Path (Split-Path $PSScriptRoot -Parent) "terraform.tfvars"
     if (Test-Path $tfvarsPath) {
         $tfvarsMatch = Select-String -Path $tfvarsPath -Pattern '^\s*windows_admin_password\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
         if ($tfvarsMatch) {
@@ -425,8 +493,14 @@ if ($Action -eq "destroy" -and -not $AutoApprove) {
     }
 }
 
+$rootTfvarsPath = Join-Path (Split-Path $PSScriptRoot -Parent) "terraform.tfvars"
+if (-not (Test-Path $rootTfvarsPath)) {
+    throw "Root terraform.tfvars not found at '$rootTfvarsPath'. Copy vm-deploy/terraform.tfvars.example to vm-deploy/terraform.tfvars."
+}
+
 $terraformArgs = @(
-    $Action
+    $Action,
+    "-var-file=$rootTfvarsPath"
 )
 
 if ($PSBoundParameters.ContainsKey("AksResourceGroup")) {
@@ -435,7 +509,7 @@ if ($PSBoundParameters.ContainsKey("AksResourceGroup")) {
 if ($PSBoundParameters.ContainsKey("AksClusterName")) {
     $terraformArgs += @("-var", "cluster_name=$AksClusterName")
 }
-if ($PSBoundParameters.ContainsKey("AksLocation")) {
+if ($PSBoundParameters.ContainsKey("AksLocation") -or $locationResolvedFromDefault) {
     $terraformArgs += @("-var", "location=$AksLocation")
 }
 if ($PSBoundParameters.ContainsKey("AksKubernetesVersion")) {
@@ -505,12 +579,12 @@ try {
 
     $initResult = Invoke-TerraformMinimal -Arguments @("init", "-input=false") -DisplayName "init"
     if ($initResult.ExitCode -ne 0) {
-        throw "terraform init exited with code $($initResult.ExitCode)"
+        Throw-TerraformFailure -Phase "init" -Result $initResult
     }
 
     $actionResult = Invoke-TerraformMinimal -Arguments $terraformArgs -DisplayName $Action
     if ($actionResult.ExitCode -ne 0) {
-        throw "terraform $Action exited with code $($actionResult.ExitCode)"
+        Throw-TerraformFailure -Phase $Action -Result $actionResult
     }
 
     Write-TerraformSummary -Summary $actionResult.Summary

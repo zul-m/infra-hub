@@ -1,0 +1,42 @@
+# Copy this file to terraform.tfvars and fill in your values.
+
+# Shared
+location               = "southeastasia"
+
+# VM
+prefix                 = "mumu"
+tenant_id              = "00000000-0000-0000-0000-000000000000"
+subscription_id        = "11111111-1111-1111-1111-111111111111"
+vm_size                = "Standard_D4s_v3"
+vm_admin_username      = "azureadmin"
+vm_admin_password      = "<strong-password>"
+auto_shutdown_time     = "2000"
+auto_shutdown_timezone = "UTC"
+ansible_playbook_path  = "./ansible/playbooks/applications.yml"
+sql_admin_username     = "sqladmin"
+sql_admin_password     = "<strong-sql-password>"
+# allowed_cidrs          = ["ADDITIONAL_IP/32"]
+# vnet_cidr              = "10.20.0.0/16"
+# vm_subnet_cidr         = "10.20.1.0/24"
+
+# AKS
+resource_group_name          = "my-aks-rg"
+cluster_name                 = "my-aks-cluster"
+kubernetes_version           = "1.36.1"
+linux_node_count             = 1
+windows_node_count           = 2
+node_vm_size                 = "Standard_D4s_v3"
+# linux_node_vm_size         = "Standard_D4s_v3"
+# windows_node_vm_size       = "Standard_D4s_v3"
+windows_node_pool_name       = "win"
+windows_admin_username       = "azureadmin"
+windows_admin_password       = "<strong-password>"
+# aks_sku_tier               = "Free"
+# log_analytics_workspace_name = "my-aks-law"
+# ingress_release_name         = "nginx-ingress"
+# ingress_chart_version        = "4.11.3"
+# create_registry_secret       = true
+# registry_secret_name         = "my-registry-secret"
+# registry_server              = "myregistry.azurecr.io"
+# registry_username            = "<registry-username>"
+# registry_password            = "<registry-password>"
