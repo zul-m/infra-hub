@@ -215,6 +215,41 @@ function Write-TerraformSummary {
     Write-TerraformResourceList -Title "Destroyed" -Resources $Summary.DestroyedResources
 }
 
+function Redact-TerraformOutput {
+    param(
+        [string]$Text
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $Text
+    }
+
+    $redacted = [string]$Text
+
+    $knownSecretValues = @(
+        $env:TF_VAR_windows_admin_password,
+        $env:TF_VAR_registry_password
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+
+    foreach ($secretValue in $knownSecretValues) {
+        $redacted = [regex]::Replace($redacted, [regex]::Escape([string]$secretValue), '[REDACTED]')
+    }
+
+    $redacted = [regex]::Replace(
+        $redacted,
+        '(?im)(\b(?:password|passwd|secret|token|api[_-]?key|client[_-]?secret|connection[_-]?string|access[_-]?key|private[_-]?key)\b\s*[:=]\s*)([^\r\n]+)',
+        '$1[REDACTED]'
+    )
+
+    $redacted = [regex]::Replace(
+        $redacted,
+        '(?im)("?(?:password|passwd|secret|token|api[_-]?key|client[_-]?secret|connection[_-]?string|access[_-]?key|private[_-]?key)"?\s*:\s*")([^"]+)("?)',
+        '$1[REDACTED]$3'
+    )
+
+    return $redacted
+}
+
 function Throw-TerraformFailure {
     param(
         [string]$Phase,
@@ -230,7 +265,7 @@ function Throw-TerraformFailure {
     if (-not [string]::IsNullOrWhiteSpace($stdErr)) {
         Write-Host "" -ForegroundColor Red
         Write-Host "  --- Terraform STDERR ---" -ForegroundColor Red
-        Write-Host $stdErr -ForegroundColor Red
+        Write-Host (Redact-TerraformOutput -Text $stdErr) -ForegroundColor Red
     }
 
     if (-not [string]::IsNullOrWhiteSpace($stdOut)) {
@@ -239,7 +274,7 @@ function Throw-TerraformFailure {
         Write-Host "" -ForegroundColor Yellow
         Write-Host ("  --- Terraform STDOUT (last {0} lines) ---" -f $tailCount) -ForegroundColor Yellow
         if ($tailCount -gt 0) {
-            Write-Host (($outLines | Select-Object -Last $tailCount) -join "`n") -ForegroundColor Yellow
+            Write-Host (Redact-TerraformOutput -Text (($outLines | Select-Object -Last $tailCount) -join "`n")) -ForegroundColor Yellow
         }
     }
 
