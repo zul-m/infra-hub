@@ -296,9 +296,9 @@ function Get-TfvarsQuotedValue {
         [string]$Guidance
     )
 
-    $tfvarsPath = Join-Path (Split-Path $PSScriptRoot -Parent) "terraform.tfvars"
+    $tfvarsPath = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "terraform.tfvars"
     if (-not (Test-Path $tfvarsPath)) {
-        throw "terraform.tfvars was not found at '$tfvarsPath'. This file must define $Key for preflight checks."
+        throw "terraform.tfvars was not found at '$tfvarsPath'. Copy vm-deploy/terraform.tfvars.example to vm-deploy/terraform.tfvars."
     }
 
     $escapedKey = [regex]::Escape($Key)
@@ -548,6 +548,12 @@ if ($VmSize) {
 if ($AutoApprove -and $Action -ne "plan") {
     $tfArgs += "-auto-approve"
 }
+
+$rootTfvarsPath = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "terraform.tfvars"
+if (-not (Test-Path $rootTfvarsPath)) {
+    throw "Root terraform.tfvars not found at '$rootTfvarsPath'. Copy vm-deploy/terraform.tfvars.example to vm-deploy/terraform.tfvars."
+}
+$tfArgs = @("-var-file=$rootTfvarsPath") + $tfArgs
 
 Push-Location (Split-Path $PSScriptRoot -Parent)
 try {

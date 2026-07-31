@@ -376,20 +376,12 @@ function Select-Option {
 }
 
 function Get-DefaultAksLocation {
-    $aksTfvarsPath = Join-Path $PSScriptRoot "terraform.tfvars"
-    if (Test-Path $aksTfvarsPath) {
-        $aksMatch = Select-String -Path $aksTfvarsPath -Pattern '^\s*location\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
-        if ($aksMatch) {
-            return $aksMatch.Matches[0].Groups[1].Value
-        }
-    }
-
-    $vmTfvarsPath = Join-Path (Join-Path $PSScriptRoot "..") "vm\terraform.tfvars"
-    if (-not (Test-Path $vmTfvarsPath)) {
+    $rootTfvarsPath = Join-Path (Split-Path $PSScriptRoot -Parent) "terraform.tfvars"
+    if (-not (Test-Path $rootTfvarsPath)) {
         return $null
     }
 
-    $match = Select-String -Path $vmTfvarsPath -Pattern '^\s*location\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
+    $match = Select-String -Path $rootTfvarsPath -Pattern '^\s*location\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
     if (-not $match) {
         return $null
     }
@@ -425,7 +417,7 @@ if ($AksRegistryServer -and $AksRegistryUsername -and $AksRegistryPassword) {
 }
 
 if ($Action -eq "apply" -and $AksWindowsNodeCount -gt 0 -and -not $AksWindowsAdminPassword) {
-    $tfvarsPath = Join-Path $PSScriptRoot "terraform.tfvars"
+    $tfvarsPath = Join-Path (Split-Path $PSScriptRoot -Parent) "terraform.tfvars"
     if (Test-Path $tfvarsPath) {
         $tfvarsMatch = Select-String -Path $tfvarsPath -Pattern '^\s*windows_admin_password\s*=\s*"([^"]+)"\s*$' | Select-Object -First 1
         if ($tfvarsMatch) {
@@ -466,8 +458,14 @@ if ($Action -eq "destroy" -and -not $AutoApprove) {
     }
 }
 
+$rootTfvarsPath = Join-Path (Split-Path $PSScriptRoot -Parent) "terraform.tfvars"
+if (-not (Test-Path $rootTfvarsPath)) {
+    throw "Root terraform.tfvars not found at '$rootTfvarsPath'. Copy vm-deploy/terraform.tfvars.example to vm-deploy/terraform.tfvars."
+}
+
 $terraformArgs = @(
-    $Action
+    $Action,
+    "-var-file=$rootTfvarsPath"
 )
 
 if ($PSBoundParameters.ContainsKey("AksResourceGroup")) {
