@@ -24,6 +24,8 @@ param(
     [ValidateSet("Standard_D4s_v3", "Standard_D8s_v3")]
     [string]$VmSize,
 
+    [string]$VmResourceGroupName,
+
     [switch]$AutoApprove,
 
     [switch]$BootstrapAks,
@@ -34,7 +36,6 @@ param(
     [string]$AksKubernetesVersion,
     [ValidateSet("Free", "Standard", "Premium")]
     [string]$AksSkuTier,
-    [string]$AksLogAnalyticsWorkspaceName,
     [int]$AksLinuxNodeCount,
     [string]$AksLinuxNodeVmSize,
     [int]$AksWindowsNodeCount,
@@ -124,7 +125,7 @@ Write-Host "  |         Infra  Deploy  Tool          |" -ForegroundColor Cyan
 Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
 
 $hasAksParams = @($PSBoundParameters.Keys | Where-Object { $_ -like "Aks*" }).Count -gt 0
-$hasVmParams = $PSBoundParameters.ContainsKey("OsVersion") -or $PSBoundParameters.ContainsKey("VmSize")
+$hasVmParams = $PSBoundParameters.ContainsKey("OsVersion") -or $PSBoundParameters.ContainsKey("VmSize") -or $PSBoundParameters.ContainsKey("VmResourceGroupName")
 
 if ($hasAksParams -and $hasVmParams) {
     throw "Do not mix VM and AKS-specific parameters in one command. Use -Target vm with VM parameters or -Target aks with AKS parameters."
@@ -167,6 +168,7 @@ if ($Target -eq "vm") {
     if ($PSBoundParameters.ContainsKey("OsVersion")) { $vmParams.OsVersion = $OsVersion }
     if ($PSBoundParameters.ContainsKey("Action")) { $vmParams.Action = $Action }
     if ($PSBoundParameters.ContainsKey("VmSize")) { $vmParams.VmSize = $VmSize }
+    if ($PSBoundParameters.ContainsKey("VmResourceGroupName")) { $vmParams.ResourceGroupName = $VmResourceGroupName }
     if ($AutoApprove) { $vmParams.AutoApprove = $true }
 
     & $vmScript @vmParams
@@ -196,7 +198,6 @@ if ($PSBoundParameters.ContainsKey("AksClusterName")) { $aksParams.AksClusterNam
 if ($PSBoundParameters.ContainsKey("AksLocation")) { $aksParams.AksLocation = $AksLocation }
 if ($PSBoundParameters.ContainsKey("AksKubernetesVersion")) { $aksParams.AksKubernetesVersion = $AksKubernetesVersion }
 if ($PSBoundParameters.ContainsKey("AksSkuTier")) { $aksParams.AksSkuTier = $AksSkuTier }
-if ($PSBoundParameters.ContainsKey("AksLogAnalyticsWorkspaceName")) { $aksParams.AksLogAnalyticsWorkspaceName = $AksLogAnalyticsWorkspaceName }
 if ($PSBoundParameters.ContainsKey("AksLinuxNodeCount")) { $aksParams.AksLinuxNodeCount = $AksLinuxNodeCount }
 if ($PSBoundParameters.ContainsKey("AksLinuxNodeVmSize")) { $aksParams.AksLinuxNodeVmSize = $AksLinuxNodeVmSize }
 if ($PSBoundParameters.ContainsKey("AksWindowsNodeCount")) { $aksParams.AksWindowsNodeCount = $AksWindowsNodeCount }

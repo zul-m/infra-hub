@@ -43,8 +43,6 @@ param(
 
     [string]$AksWindowsAdminPassword,
 
-    [string]$AksLogAnalyticsWorkspaceName,
-
     [string]$AksRegistryServer,
 
     [string]$AksRegistryUsername,
@@ -424,6 +422,118 @@ function Get-DefaultAksLocation {
     return $match.Matches[0].Groups[1].Value
 }
 
+function Get-TerraformStateResourceGroupName {
+    param(
+        [string]$ResourceAddress
+    )
+
+    $stateResources = @(& terraform state list 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $stateResources.Count -eq 0) {
+        throw "No Terraform state resources were found. Destroy is blocked until a managed AKS environment exists in this state."
+    }
+
+    if ($stateResources -notcontains $ResourceAddress) {
+        throw "Terraform state does not contain '$ResourceAddress'. Destroy is blocked because the managed AKS resource group cannot be resolved from state."
+    }
+
+    $stateShow = @(& terraform state show $ResourceAddress 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $stateShow.Count -eq 0) {
+        throw "Failed to read Terraform state for '$ResourceAddress'. Destroy is blocked."
+    }
+
+    foreach ($line in $stateShow) {
+        if ($line -match '^\s*name\s*=\s*"(?<name>[^"]+)"\s*$') {
+            return $matches.name
+        }
+    }
+
+    throw "Terraform state for '$ResourceAddress' does not expose a readable name attribute. Destroy is blocked."
+}
+
+function Assert-DestroyResourceGroupMatch {
+    param(
+        [string]$RequestedResourceGroup
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RequestedResourceGroup)) {
+        throw "AksResourceGroup is required for destroy."
+    }
+
+    $stateResourceGroup = Get-TerraformStateResourceGroupName -ResourceAddress "azurerm_resource_group.aks"
+    if ($RequestedResourceGroup.Trim() -ine $stateResourceGroup.Trim()) {
+        throw "Destroy blocked: requested AKS resource group '$RequestedResourceGroup' does not match Terraform state resource group '$stateResourceGroup'."
+    }
+
+    Write-Host "  Destroy guard: AKS resource group matches Terraform state." -ForegroundColor Green
+}
+
+function Get-LocalStateResourceGroupName {
+    param(
+        [string]$StatePath,
+        [string]$ResourceName
+    )
+
+    if (-not (Test-Path $StatePath)) {
+        return $null
+    }
+
+    $rawState = Get-Content -Path $StatePath -Raw -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($rawState)) {
+        return $null
+    }
+
+    try {
+        $state = $rawState | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+
+    $resource = $state.resources |
+        Where-Object { $_.type -eq "azurerm_resource_group" -and $_.name -eq $ResourceName } |
+        Select-Object -First 1
+
+    if (-not $resource -or -not $resource.instances -or $resource.instances.Count -eq 0) {
+        return $null
+    }
+
+    $instance = $resource.instances | Select-Object -First 1
+    if ($instance.attributes -and $instance.attributes.name) {
+        return [string]$instance.attributes.name
+    }
+
+    return $null
+}
+
+function Assert-DestroyResourceGroupMatchEarly {
+    param(
+        [string]$RequestedResourceGroup
+    )
+
+    $statePath = Join-Path $PSScriptRoot "terraform.tfstate"
+    $stateResourceGroup = Get-LocalStateResourceGroupName -StatePath $statePath -ResourceName "aks"
+
+    $candidate = if ([string]::IsNullOrWhiteSpace($RequestedResourceGroup)) { "" } else { $RequestedResourceGroup.Trim() }
+
+    if ([string]::IsNullOrWhiteSpace($stateResourceGroup)) {
+        Write-Host "  Destroy guard: local state RG not resolvable yet; full Terraform state check will run before destroy." -ForegroundColor DarkYellow
+        return $candidate
+    }
+
+    while ($true) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -ieq $stateResourceGroup.Trim()) {
+            Write-Host "  Destroy guard: AKS resource group matches local Terraform state." -ForegroundColor Green
+            return $stateResourceGroup.Trim()
+        }
+
+        Write-Host "  Destroy guard: entered AKS resource group does not match Terraform state." -ForegroundColor Red
+        $candidate = (Read-Host "  Enter AKS resource group name to destroy (blank to cancel)").Trim()
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            Write-Host "  Cancelled.`n"
+            throw [System.OperationCanceledException]::new("AKS destroy cancelled due to resource group mismatch.")
+        }
+    }
+}
+
 $locationResolvedFromDefault = $false
 if (-not $AksLocation) {
     $AksLocation = Get-DefaultAksLocation
@@ -439,7 +549,25 @@ if (-not $Action) {
     $Action = Select-Option -Prompt "Select action:" -Options @("apply", "destroy") -Default 0
 }
 
-if (-not $AutoApprove) {
+if ($Action -eq "destroy" -and $AutoApprove) {
+    Write-Host "  Auto-approve input ignored for destroy; a destroy preview and explicit confirmation are always required." -ForegroundColor DarkYellow
+    $AutoApprove = $false
+}
+
+if ($Action -eq "destroy" -and -not $PSBoundParameters.ContainsKey("AksResourceGroup")) {
+    Write-Host ""
+    $destroyRgInput = Read-Host "  Enter AKS resource group name to destroy"
+    if ([string]::IsNullOrWhiteSpace($destroyRgInput)) {
+        throw "AksResourceGroup is required for destroy."
+    }
+    $AksResourceGroup = $destroyRgInput.Trim()
+}
+
+if ($Action -eq "destroy") {
+    $AksResourceGroup = Assert-DestroyResourceGroupMatchEarly -RequestedResourceGroup $AksResourceGroup
+}
+
+if ($Action -eq "apply" -and -not $AutoApprove) {
     $choice = Select-Option -Prompt "Auto-approve?" -Options @("No  - pause and review before applying", "Yes - execute immediately") -Default 0
     $AutoApprove = $choice -like "Yes*"
 }
@@ -469,9 +597,10 @@ Write-Host ""
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
 Write-Host "  |              Summary                 |" -ForegroundColor DarkGray
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
+$autoApproveDisplay = if ($Action -eq "destroy") { "N/A (preview + confirm)" } else { [string]$AutoApprove }
 Write-Host ("  |  Target       : {0,-22}|" -f "aks") -ForegroundColor White
 Write-Host ("  |  Action       : {0,-22}|" -f $Action) -ForegroundColor White
-Write-Host ("  |  Auto-approve : {0,-22}|" -f ([string]$AutoApprove)) -ForegroundColor White
+Write-Host ("  |  Auto-approve : {0,-22}|" -f $autoApproveDisplay) -ForegroundColor White
 Write-Host ("  |  AKS RG       : {0,-22}|" -f $AksResourceGroup) -ForegroundColor White
 Write-Host ("  |  AKS cluster  : {0,-22}|" -f $AksClusterName) -ForegroundColor White
 Write-Host ("  |  K8s version  : {0,-22}|" -f $AksKubernetesVersion) -ForegroundColor White
@@ -479,19 +608,6 @@ Write-Host ("  |  SKU tier     : {0,-22}|" -f $AksSkuTier) -ForegroundColor Whit
 Write-Host ("  |  Location     : {0,-22}|" -f $AksLocation) -ForegroundColor White
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
 Write-Host ""
-
-if ($Action -eq "destroy" -and -not $AutoApprove) {
-    $ok = $Host.UI.PromptForChoice(
-        "  Confirm AKS destroy",
-        "  This will DELETE AKS cluster '$AksClusterName' and managed resources. Continue?",
-        @("&Yes", "&No"),
-        1
-    )
-    if ($ok -ne 0) {
-        Write-Host "  Cancelled.`n"
-        throw [System.OperationCanceledException]::new("AKS destroy cancelled by user.")
-    }
-}
 
 $rootTfvarsPath = Join-Path (Split-Path $PSScriptRoot -Parent) "terraform.tfvars"
 if (-not (Test-Path $rootTfvarsPath)) {
@@ -539,9 +655,6 @@ if ($PSBoundParameters.ContainsKey("AksWindowsAdminUsername")) {
 if ($PSBoundParameters.ContainsKey("AksRegistrySecretName")) {
     $terraformArgs += @("-var", "registry_secret_name=$AksRegistrySecretName")
 }
-if ($PSBoundParameters.ContainsKey("AksLogAnalyticsWorkspaceName")) {
-    $terraformArgs += @("-var", "log_analytics_workspace_name=$AksLogAnalyticsWorkspaceName")
-}
 
 if ($createRegistrySecret) {
     $terraformArgs += @("-var", "create_registry_secret=true")
@@ -559,7 +672,7 @@ if ($createRegistrySecret -and -not $PSBoundParameters.ContainsKey("AksRegistryP
     throw "AksRegistryPassword is required when registry secret creation is enabled."
 }
 
-if ($AutoApprove) {
+if ($Action -eq "apply" -and $AutoApprove) {
     $terraformArgs += "-auto-approve"
 }
 
@@ -580,6 +693,51 @@ try {
     $initResult = Invoke-TerraformMinimal -Arguments @("init", "-input=false") -DisplayName "init"
     if ($initResult.ExitCode -ne 0) {
         Throw-TerraformFailure -Phase "init" -Result $initResult
+    }
+
+    if ($Action -eq "destroy") {
+        Assert-DestroyResourceGroupMatch -RequestedResourceGroup $AksResourceGroup
+
+        $destroyPreviewArgs = @()
+        $replacedAction = $false
+        foreach ($arg in $terraformArgs) {
+            if (-not $replacedAction -and $arg -eq "destroy") {
+                $destroyPreviewArgs += @("plan", "-destroy")
+                $replacedAction = $true
+                continue
+            }
+            $destroyPreviewArgs += $arg
+        }
+
+        if (-not $replacedAction) {
+            throw "Failed to prepare destroy preview arguments."
+        }
+
+        $previewResult = Invoke-TerraformMinimal -Arguments $destroyPreviewArgs -DisplayName "destroy-preview"
+        if ($previewResult.ExitCode -ne 0) {
+            Throw-TerraformFailure -Phase "plan -destroy preview" -Result $previewResult
+        }
+
+        Write-Host ""
+        Write-Host "  Destroy preview summary:" -ForegroundColor Yellow
+        Write-Host ("  Changes: +{0}  ~{1}  -{2}" -f $previewResult.Summary.AddedCount, $previewResult.Summary.ChangedCount, $previewResult.Summary.DestroyedCount) -ForegroundColor Yellow
+        Write-TerraformResourceList -Title "Resources to destroy" -Resources $previewResult.Summary.DestroyedResources -MaxItems 30
+        if ($previewResult.Summary.DestroyedCount -eq 0) {
+            Write-Host "  No resources are planned for destroy." -ForegroundColor DarkYellow
+        }
+
+        $ok = $Host.UI.PromptForChoice(
+            "  Confirm AKS destroy",
+            "  This will DELETE AKS cluster '$AksClusterName' in resource group '$AksResourceGroup' and managed resources. Continue?",
+            @("&Yes", "&No"),
+            1
+        )
+        if ($ok -ne 0) {
+            Write-Host "  Cancelled.`n"
+            throw [System.OperationCanceledException]::new("AKS destroy cancelled by user.")
+        }
+
+        $terraformArgs += "-auto-approve"
     }
 
     $actionResult = Invoke-TerraformMinimal -Arguments $terraformArgs -DisplayName $Action
