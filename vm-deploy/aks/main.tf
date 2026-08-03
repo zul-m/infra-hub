@@ -1,5 +1,4 @@
 locals {
-  workspace_name = var.log_analytics_workspace_name != null && length(trimspace(var.log_analytics_workspace_name)) > 0 ? trimspace(var.log_analytics_workspace_name) : "${var.cluster_name}-law"
   shared_node_vm_size = trimspace(var.node_vm_size)
   linux_node_vm_size_effective = var.linux_node_vm_size != null && length(trimspace(var.linux_node_vm_size)) > 0 ? trimspace(var.linux_node_vm_size) : local.shared_node_vm_size
   windows_node_vm_size_effective = var.windows_node_vm_size != null && length(trimspace(var.windows_node_vm_size)) > 0 ? trimspace(var.windows_node_vm_size) : local.shared_node_vm_size
@@ -69,14 +68,6 @@ resource "azurerm_resource_group" "aks" {
   location = var.location
 }
 
-resource "azurerm_log_analytics_workspace" "aks" {
-  name                = local.workspace_name
-  location            = azurerm_resource_group.aks.location
-  resource_group_name = azurerm_resource_group.aks.name
-  sku                 = "PerGB2018"
-  retention_in_days   = 30
-}
-
 resource "azurerm_kubernetes_cluster" "aks" {
   name                = var.cluster_name
   location            = azurerm_resource_group.aks.location
@@ -108,9 +99,6 @@ resource "azurerm_kubernetes_cluster" "aks" {
     load_balancer_sku = "standard"
   }
 
-  oms_agent {
-    log_analytics_workspace_id = azurerm_log_analytics_workspace.aks.id
-  }
 }
 
 resource "azurerm_kubernetes_cluster_node_pool" "windows" {
