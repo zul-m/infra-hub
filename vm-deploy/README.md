@@ -82,7 +82,7 @@ VM plan/destroy:
 
 ```powershell
 .\deploy.ps1 -Target vm -OsVersion win11 -Action plan
-.\deploy.ps1 -Target vm -OsVersion win22 -Action destroy
+.\deploy.ps1 -Target vm -Action destroy -VmResourceGroupName mumu22
 ```
 
 AKS apply:
@@ -91,17 +91,6 @@ AKS apply:
 .\deploy.ps1 -Target aks -Action apply -AutoApprove `
   -AksResourceGroup mumu-aks `
   -AksClusterName mumu-aks1361 `
-  -AksWindowsAdminUsername mumu `
-  -AksWindowsAdminPassword "<strong-password>"
-```
-
-AKS apply with optional workspace override:
-
-```powershell
-.\deploy.ps1 -Target aks -Action apply -AutoApprove `
-  -AksResourceGroup mumu-aks `
-  -AksClusterName mumu-aks1361 `
-  -AksLogAnalyticsWorkspaceName mumu-aks1361-law `
   -AksWindowsAdminUsername mumu `
   -AksWindowsAdminPassword "<strong-password>"
 ```
@@ -142,6 +131,7 @@ AKS destroy:
 - Root `deploy.ps1` only routes to target-specific scripts; target logic is isolated per folder.
 - VM Terraform state/caches and tfvars are now expected under `vm/`.
 - AKS resources and ingress-nginx are provisioned by Terraform in `aks/`.
+- VM and AKS destroy are now strict: the provided resource group must match the resource group currently tracked in that target's Terraform state, or destroy is blocked.
 - Optional docker-registry pull secret is also managed by Terraform when registry inputs are provided.
 - AKS script uses `vm/terraform.tfvars` location as default `AksLocation` only when `location` is not set in `aks/terraform.tfvars` and not passed as a CLI override.
 - Legacy `-BootstrapAks` still maps to AKS apply for backward compatibility.

@@ -83,13 +83,6 @@ variable "windows_admin_password" {
   sensitive   = true
 }
 
-variable "log_analytics_workspace_name" {
-  description = "Log Analytics workspace name for AKS monitoring addon"
-  type        = string
-  default     = null
-  nullable    = true
-}
-
 variable "ingress_release_name" {
   description = "Helm release name for ingress-nginx"
   type        = string

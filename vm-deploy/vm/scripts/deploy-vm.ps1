@@ -12,6 +12,9 @@
 .PARAMETER Action
     Terraform action: plan | apply | destroy
 
+.PARAMETER ResourceGroupName
+    Resource group name to target for destroy. In interactive mode this is prompted only for destroy.
+
 .PARAMETER VmSize
     VM size: Standard_D4s_v3 | Standard_D8s_v3
 
@@ -26,16 +29,42 @@ param(
     [ValidateSet("plan", "apply", "destroy")]
     [string]$Action,
 
+    [string]$ResourceGroupName,
+
     [ValidateSet("Standard_D4s_v3", "Standard_D8s_v3")]
     [string]$VmSize,
 
-    [switch]$AutoApprove
+    [switch]$AutoApprove,
+
+    [switch]$ConfirmDestroy
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 trap [System.OperationCanceledException] {
     return
+}
+
+$script:TerraformWorkingDirectory = Split-Path $PSScriptRoot -Parent
+
+function Test-IsNonInteractiveSession {
+    if ($env:TF_IN_AUTOMATION -eq "1") {
+        return $true
+    }
+
+    if ($env:CI -and $env:CI.ToString().Trim().ToLowerInvariant() -eq "true") {
+        return $true
+    }
+
+    if (-not [Environment]::UserInteractive) {
+        return $true
+    }
+
+    try {
+        return [Console]::IsInputRedirected -or [Console]::IsOutputRedirected
+    } catch {
+        return $true
+    }
 }
 
 function Ensure-AzLogin {
@@ -408,6 +437,123 @@ function Test-AzVmQuotaAvailable {
     Write-Host "  Preflight: quota is sufficient (needs $requiredCores vCPUs)." -ForegroundColor Green
 }
 
+function Get-TerraformStateResourceGroupName {
+    param(
+        [string]$ResourceAddress
+    )
+
+    $stateResources = @(& terraform "-chdir=$script:TerraformWorkingDirectory" state list 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $stateResources.Count -eq 0) {
+        throw "No Terraform state resources were found. Destroy is blocked until a managed environment exists in this state."
+    }
+
+    if ($stateResources -notcontains $ResourceAddress) {
+        throw "Terraform state does not contain '$ResourceAddress'. Destroy is blocked because the managed resource group cannot be resolved from state."
+    }
+
+    $stateShow = @(& terraform "-chdir=$script:TerraformWorkingDirectory" state show $ResourceAddress 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $stateShow.Count -eq 0) {
+        throw "Failed to read Terraform state for '$ResourceAddress'. Destroy is blocked."
+    }
+
+    foreach ($line in $stateShow) {
+        if ($line -match '^\s*name\s*=\s*"(?<name>[^"]+)"\s*$') {
+            return $matches.name
+        }
+    }
+
+    throw "Terraform state for '$ResourceAddress' does not expose a readable name attribute. Destroy is blocked."
+}
+
+function Assert-DestroyResourceGroupMatch {
+    param(
+        [string]$RequestedResourceGroup
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RequestedResourceGroup)) {
+        throw "Resource group name is required for destroy."
+    }
+
+    $stateResourceGroup = Get-TerraformStateResourceGroupName -ResourceAddress "azurerm_resource_group.main"
+    if ($RequestedResourceGroup.Trim() -ine $stateResourceGroup.Trim()) {
+        throw "Destroy blocked: requested resource group '$RequestedResourceGroup' does not match Terraform state resource group '$stateResourceGroup'."
+    }
+
+    Write-Host "  Destroy guard: resource group matches Terraform state." -ForegroundColor Green
+}
+
+function Get-LocalStateResourceGroupName {
+    param(
+        [string]$StatePath,
+        [string]$ResourceName
+    )
+
+    if (-not (Test-Path $StatePath)) {
+        return $null
+    }
+
+    $rawState = Get-Content -Path $StatePath -Raw -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($rawState)) {
+        return $null
+    }
+
+    try {
+        $state = $rawState | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+
+    $resource = $state.resources |
+        Where-Object { $_.type -eq "azurerm_resource_group" -and $_.name -eq $ResourceName } |
+        Select-Object -First 1
+
+    if (-not $resource -or -not $resource.instances -or $resource.instances.Count -eq 0) {
+        return $null
+    }
+
+    $instance = $resource.instances | Select-Object -First 1
+    if ($instance.attributes -and $instance.attributes.name) {
+        return [string]$instance.attributes.name
+    }
+
+    return $null
+}
+
+function Assert-DestroyResourceGroupMatchEarly {
+    param(
+        [string]$RequestedResourceGroup,
+        [switch]$AllowPrompt
+    )
+
+    $statePath = Join-Path (Split-Path $PSScriptRoot -Parent) "terraform.tfstate"
+    $stateResourceGroup = Get-LocalStateResourceGroupName -StatePath $statePath -ResourceName "main"
+
+    $candidate = if ([string]::IsNullOrWhiteSpace($RequestedResourceGroup)) { "" } else { $RequestedResourceGroup.Trim() }
+
+    if ([string]::IsNullOrWhiteSpace($stateResourceGroup)) {
+        Write-Host "  Destroy guard: local state RG not resolvable yet; full Terraform state check will run before destroy." -ForegroundColor DarkYellow
+        return $candidate
+    }
+
+    while ($true) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -ieq $stateResourceGroup.Trim()) {
+            Write-Host "  Destroy guard: resource group matches local Terraform state." -ForegroundColor Green
+            return $stateResourceGroup.Trim()
+        }
+
+        if (-not $AllowPrompt) {
+            throw "Destroy blocked: in non-interactive mode the requested resource group '$RequestedResourceGroup' does not match local Terraform state resource group '$stateResourceGroup'. Pass -ResourceGroupName '$stateResourceGroup' and -ConfirmDestroy."
+        }
+
+        Write-Host "  Destroy guard: entered resource group does not match Terraform state." -ForegroundColor Red
+        $candidate = (Read-Host "  Enter resource group name to destroy (blank to cancel)").Trim()
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            Write-Host "  Cancelled.`n"
+            throw [System.OperationCanceledException]::new("VM destroy cancelled due to resource group mismatch.")
+        }
+    }
+}
+
 function Select-Option {
     param(
         [string]   $Prompt,
@@ -485,14 +631,45 @@ Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
 Write-Host "  |             VM  Deploy               |" -ForegroundColor Cyan
 Write-Host "  +--------------------------------------+" -ForegroundColor Cyan
 
-if (-not $OsVersion) {
-    $labels = $Profiles.Keys | ForEach-Object { $Profiles[$_].label }
-    $picked = Select-Option -Prompt "Select OS version:" -Options $labels -Default 0
-    $OsVersion = $Profiles.Keys | Where-Object { $Profiles[$_].label -eq $picked } | Select-Object -First 1
-}
-
 if (-not $Action) {
     $Action = Select-Option -Prompt "Select action:" -Options @("plan", "apply", "destroy") -Default 0
+}
+
+if ($Action -eq "destroy" -and $AutoApprove) {
+    Write-Host "  Auto-approve input ignored for destroy; a destroy preview and explicit confirmation are always required." -ForegroundColor DarkYellow
+    $AutoApprove = $false
+}
+
+$isNonInteractive = Test-IsNonInteractiveSession
+if ($Action -eq "destroy" -and $isNonInteractive -and -not $ConfirmDestroy) {
+    throw "Destroy requires explicit non-interactive confirmation. Re-run with -ConfirmDestroy and -ResourceGroupName <name>."
+}
+
+if ($Action -eq "destroy" -and -not $ResourceGroupName) {
+    if ($isNonInteractive) {
+        throw "ResourceGroupName is required for destroy in non-interactive mode. Pass -ResourceGroupName <name> with -ConfirmDestroy."
+    }
+
+    Write-Host ""
+    $ResourceGroupName = Read-Host "  Enter resource group name to destroy"
+    if ([string]::IsNullOrWhiteSpace($ResourceGroupName)) {
+        throw "Resource group name is required for destroy."
+    }
+}
+
+if ($Action -eq "destroy") {
+    $ResourceGroupName = Assert-DestroyResourceGroupMatchEarly -RequestedResourceGroup $ResourceGroupName -AllowPrompt:(-not $isNonInteractive -and -not $ConfirmDestroy)
+}
+
+if (-not $OsVersion) {
+    if ($Action -eq "destroy") {
+        # OS image inputs are not meaningful for destroy; use a stable default profile.
+        $OsVersion = "win22"
+    } else {
+        $labels = $Profiles.Keys | ForEach-Object { $Profiles[$_].label }
+        $picked = Select-Option -Prompt "Select OS version:" -Options $labels -Default 0
+        $OsVersion = $Profiles.Keys | Where-Object { $Profiles[$_].label -eq $picked } | Select-Object -First 1
+    }
 }
 
 if (-not $VmSize -and $Action -ne "destroy") {
@@ -504,7 +681,7 @@ if (-not $VmSize -and $Action -ne "destroy") {
     }
 }
 
-if (-not $AutoApprove -and $Action -ne "plan") {
+if ($Action -eq "apply" -and -not $AutoApprove) {
     $choice = Select-Option -Prompt "Auto-approve?" -Options @("No  - pause and review before applying", "Yes - apply immediately") -Default 0
     $AutoApprove = $choice -like "Yes*"
 }
@@ -515,23 +692,19 @@ Write-Host ""
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
 Write-Host "  |              Summary                 |" -ForegroundColor DarkGray
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
+$autoApproveDisplay = if ($Action -eq "destroy") { "N/A (preview + confirm)" } else { [string]$AutoApprove }
 Write-Host ("  |  Target       : {0,-22}|" -f "vm") -ForegroundColor White
 Write-Host ("  |  Action       : {0,-22}|" -f $Action) -ForegroundColor White
-Write-Host ("  |  Auto-approve : {0,-22}|" -f ([string]$AutoApprove)) -ForegroundColor White
-Write-Host ("  |  OS           : {0,-22}|" -f $OsVersion) -ForegroundColor White
-Write-Host ("  |  SKU          : {0,-22}|" -f $img.sku) -ForegroundColor White
-Write-Host ("  |  VM size      : {0,-22}|" -f $VmSize) -ForegroundColor White
+Write-Host ("  |  Auto-approve : {0,-22}|" -f $autoApproveDisplay) -ForegroundColor White
+if ($Action -eq "destroy") {
+    Write-Host ("  |  Resource grp : {0,-22}|" -f $ResourceGroupName) -ForegroundColor White
+} else {
+    Write-Host ("  |  OS           : {0,-22}|" -f $OsVersion) -ForegroundColor White
+    Write-Host ("  |  SKU          : {0,-22}|" -f $img.sku) -ForegroundColor White
+    Write-Host ("  |  VM size      : {0,-22}|" -f $VmSize) -ForegroundColor White
+}
 Write-Host "  +--------------------------------------+" -ForegroundColor DarkGray
 Write-Host ""
-
-if ($Action -eq "destroy" -and -not $AutoApprove) {
-    $ok = $Host.UI.PromptForChoice("  Confirm destroy", "  This will DELETE all VM resources. Continue?", @("&Yes", "&No"), 1)
-    if ($ok -ne 0) {
-        Write-Host "  Cancelled.`n"
-        throw [System.OperationCanceledException]::new("VM destroy cancelled by user.")
-    }
-    Write-Host ""
-}
 
 $tfArgs = @(
     $Action,
@@ -545,7 +718,7 @@ if ($VmSize) {
     $tfArgs += @("-var", "vm_size=$VmSize")
 }
 
-if ($AutoApprove -and $Action -ne "plan") {
+if ($Action -eq "apply" -and $AutoApprove) {
     $tfArgs += "-auto-approve"
 }
 
@@ -553,7 +726,7 @@ $rootTfvarsPath = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Pare
 if (-not (Test-Path $rootTfvarsPath)) {
     throw "Root terraform.tfvars not found at '$rootTfvarsPath'. Copy vm-deploy/terraform.tfvars.example to vm-deploy/terraform.tfvars."
 }
-$tfArgs = @("-var-file=$rootTfvarsPath") + $tfArgs
+$tfArgs = @($tfArgs[0], "-var-file=$rootTfvarsPath") + $tfArgs[1..($tfArgs.Count - 1)]
 
 Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
@@ -572,6 +745,61 @@ try {
             Write-Host $initResult.StdErr -ForegroundColor Red
         }
         throw "terraform init exited with code $($initResult.ExitCode)"
+    }
+
+    if ($Action -eq "destroy") {
+        Assert-DestroyResourceGroupMatch -RequestedResourceGroup $ResourceGroupName
+
+        $destroyPreviewArgs = @()
+        $replacedAction = $false
+        foreach ($arg in $tfArgs) {
+            if (-not $replacedAction -and $arg -eq "destroy") {
+                $destroyPreviewArgs += @("plan", "-destroy")
+                $replacedAction = $true
+                continue
+            }
+            $destroyPreviewArgs += $arg
+        }
+
+        if (-not $replacedAction) {
+            throw "Failed to prepare destroy preview arguments."
+        }
+
+        $previewResult = Invoke-TerraformMinimal -Arguments $destroyPreviewArgs -DisplayName "destroy-preview"
+        if ($previewResult.ExitCode -ne 0) {
+            if ($previewResult.StdErr) {
+                Write-Host ""
+                Write-Host "  Error Output:" -ForegroundColor Red
+                Write-Host $previewResult.StdErr -ForegroundColor Red
+            }
+            if ($previewResult.StdOut) {
+                Write-Host ""
+                Write-Host "  Output:" -ForegroundColor Yellow
+                Write-Host $previewResult.StdOut -ForegroundColor Yellow
+            }
+            throw "terraform plan -destroy preview exited with code $($previewResult.ExitCode)"
+        }
+
+        Write-Host ""
+        Write-Host "  Destroy preview summary:" -ForegroundColor Yellow
+        Write-Host ("  Changes: +{0}  ~{1}  -{2}" -f $previewResult.Summary.AddedCount, $previewResult.Summary.ChangedCount, $previewResult.Summary.DestroyedCount) -ForegroundColor Yellow
+        Write-TerraformResourceList -Title "Resources to destroy" -Resources $previewResult.Summary.DestroyedResources -MaxItems 30
+        if ($previewResult.Summary.DestroyedCount -eq 0) {
+            Write-Host "  No resources are planned for destroy." -ForegroundColor DarkYellow
+        }
+
+        if ($ConfirmDestroy) {
+            Write-Host "  Destroy confirmation override detected (-ConfirmDestroy)." -ForegroundColor DarkYellow
+        } else {
+            $ok = $Host.UI.PromptForChoice("  Confirm destroy", "  This will DELETE all VM resources. Continue?", @("&Yes", "&No"), 1)
+            if ($ok -ne 0) {
+                Write-Host "  Cancelled.`n"
+                throw [System.OperationCanceledException]::new("VM destroy cancelled by user.")
+            }
+            Write-Host ""
+        }
+
+        $tfArgs += "-auto-approve"
     }
 
     $actionResult = Invoke-TerraformMinimal -Arguments $tfArgs -DisplayName $Action
