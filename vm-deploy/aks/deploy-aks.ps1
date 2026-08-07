@@ -18,6 +18,8 @@ param(
 
     [switch]$AutoApprove,
 
+    [switch]$ConfirmDestroy,
+
     [string]$AksResourceGroup = "mumu-aks",
 
     [string]$AksClusterName = "mumu-aks1361",
@@ -56,6 +58,28 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 trap [System.OperationCanceledException] {
     return
+}
+
+$script:TerraformWorkingDirectory = $PSScriptRoot
+
+function Test-IsNonInteractiveSession {
+    if ($env:TF_IN_AUTOMATION -eq "1") {
+        return $true
+    }
+
+    if ($env:CI -and $env:CI.ToString().Trim().ToLowerInvariant() -eq "true") {
+        return $true
+    }
+
+    if (-not [Environment]::UserInteractive) {
+        return $true
+    }
+
+    try {
+        return [Console]::IsInputRedirected -or [Console]::IsOutputRedirected
+    } catch {
+        return $true
+    }
 }
 
 function Ensure-AzLogin {
@@ -427,7 +451,7 @@ function Get-TerraformStateResourceGroupName {
         [string]$ResourceAddress
     )
 
-    $stateResources = @(& terraform state list 2>$null)
+    $stateResources = @(& terraform "-chdir=$script:TerraformWorkingDirectory" state list 2>$null)
     if ($LASTEXITCODE -ne 0 -or $stateResources.Count -eq 0) {
         throw "No Terraform state resources were found. Destroy is blocked until a managed AKS environment exists in this state."
     }
@@ -436,7 +460,7 @@ function Get-TerraformStateResourceGroupName {
         throw "Terraform state does not contain '$ResourceAddress'. Destroy is blocked because the managed AKS resource group cannot be resolved from state."
     }
 
-    $stateShow = @(& terraform state show $ResourceAddress 2>$null)
+    $stateShow = @(& terraform "-chdir=$script:TerraformWorkingDirectory" state show $ResourceAddress 2>$null)
     if ($LASTEXITCODE -ne 0 -or $stateShow.Count -eq 0) {
         throw "Failed to read Terraform state for '$ResourceAddress'. Destroy is blocked."
     }
@@ -506,7 +530,8 @@ function Get-LocalStateResourceGroupName {
 
 function Assert-DestroyResourceGroupMatchEarly {
     param(
-        [string]$RequestedResourceGroup
+        [string]$RequestedResourceGroup,
+        [switch]$AllowPrompt
     )
 
     $statePath = Join-Path $PSScriptRoot "terraform.tfstate"
@@ -523,6 +548,10 @@ function Assert-DestroyResourceGroupMatchEarly {
         if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -ieq $stateResourceGroup.Trim()) {
             Write-Host "  Destroy guard: AKS resource group matches local Terraform state." -ForegroundColor Green
             return $stateResourceGroup.Trim()
+        }
+
+        if (-not $AllowPrompt) {
+            throw "Destroy blocked: in non-interactive mode the requested AKS resource group '$RequestedResourceGroup' does not match local Terraform state resource group '$stateResourceGroup'. Pass -AksResourceGroup '$stateResourceGroup' and -ConfirmDestroy."
         }
 
         Write-Host "  Destroy guard: entered AKS resource group does not match Terraform state." -ForegroundColor Red
@@ -554,7 +583,16 @@ if ($Action -eq "destroy" -and $AutoApprove) {
     $AutoApprove = $false
 }
 
+$isNonInteractive = Test-IsNonInteractiveSession
+if ($Action -eq "destroy" -and $isNonInteractive -and -not $ConfirmDestroy) {
+    throw "Destroy requires explicit non-interactive confirmation. Re-run with -ConfirmDestroy and -AksResourceGroup <name>."
+}
+
 if ($Action -eq "destroy" -and -not $PSBoundParameters.ContainsKey("AksResourceGroup")) {
+    if ($isNonInteractive) {
+        throw "AksResourceGroup is required for destroy in non-interactive mode. Pass -AksResourceGroup <name> with -ConfirmDestroy."
+    }
+
     Write-Host ""
     $destroyRgInput = Read-Host "  Enter AKS resource group name to destroy"
     if ([string]::IsNullOrWhiteSpace($destroyRgInput)) {
@@ -564,7 +602,7 @@ if ($Action -eq "destroy" -and -not $PSBoundParameters.ContainsKey("AksResourceG
 }
 
 if ($Action -eq "destroy") {
-    $AksResourceGroup = Assert-DestroyResourceGroupMatchEarly -RequestedResourceGroup $AksResourceGroup
+    $AksResourceGroup = Assert-DestroyResourceGroupMatchEarly -RequestedResourceGroup $AksResourceGroup -AllowPrompt:(-not $isNonInteractive -and -not $ConfirmDestroy)
 }
 
 if ($Action -eq "apply" -and -not $AutoApprove) {
@@ -726,15 +764,19 @@ try {
             Write-Host "  No resources are planned for destroy." -ForegroundColor DarkYellow
         }
 
-        $ok = $Host.UI.PromptForChoice(
-            "  Confirm AKS destroy",
-            "  This will DELETE AKS cluster '$AksClusterName' in resource group '$AksResourceGroup' and managed resources. Continue?",
-            @("&Yes", "&No"),
-            1
-        )
-        if ($ok -ne 0) {
-            Write-Host "  Cancelled.`n"
-            throw [System.OperationCanceledException]::new("AKS destroy cancelled by user.")
+        if ($ConfirmDestroy) {
+            Write-Host "  Destroy confirmation override detected (-ConfirmDestroy)." -ForegroundColor DarkYellow
+        } else {
+            $ok = $Host.UI.PromptForChoice(
+                "  Confirm AKS destroy",
+                "  This will DELETE AKS cluster '$AksClusterName' in resource group '$AksResourceGroup' and managed resources. Continue?",
+                @("&Yes", "&No"),
+                1
+            )
+            if ($ok -ne 0) {
+                Write-Host "  Cancelled.`n"
+                throw [System.OperationCanceledException]::new("AKS destroy cancelled by user.")
+            }
         }
 
         $terraformArgs += "-auto-approve"
