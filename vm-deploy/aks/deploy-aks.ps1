@@ -316,20 +316,10 @@ function Get-TerraformDestroyedDisplayResources {
         Select-Object -ExpandProperty Value -First 1)
     Add-DisplayValue -Label "Resource group" -Value $rg
 
-    $cluster = @($entries |
-        Where-Object { $_.Resource -match '^azurerm_kubernetes_cluster\.aks$' -and $_.Attribute -eq 'name' } |
-        Select-Object -ExpandProperty Value -First 1)
-    Add-DisplayValue -Label "AKS cluster" -Value $cluster
-
     $nodeRg = @($entries |
         Where-Object { $_.Resource -match '^azurerm_kubernetes_cluster\.aks$' -and $_.Attribute -eq 'node_resource_group' } |
         Select-Object -ExpandProperty Value -First 1)
     Add-DisplayValue -Label "Node resource group" -Value $nodeRg
-
-    $nodePoolName = @($entries |
-        Where-Object { $_.Resource -match '^azurerm_kubernetes_cluster_node_pool\.' -and $_.Attribute -eq 'name' } |
-        Select-Object -ExpandProperty Value -First 1)
-    Add-DisplayValue -Label "Node pool" -Value $nodePoolName
 
     if ($display.Count -eq 0) {
         foreach ($value in ($entries | Select-Object -ExpandProperty Value -Unique)) {

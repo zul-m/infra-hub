@@ -309,21 +309,6 @@ function Get-TerraformDestroyedDisplayResources {
         Select-Object -ExpandProperty Value -First 1)
     Add-DisplayValue -Label "VM" -Value $vmName
 
-    $vnet = @($entries |
-        Where-Object { $_.Resource -match '^azurerm_virtual_network\.main$' -and $_.Attribute -eq 'name' } |
-        Select-Object -ExpandProperty Value -First 1)
-    Add-DisplayValue -Label "VNet" -Value $vnet
-
-    $subnet = @($entries |
-        Where-Object { $_.Resource -match '^azurerm_subnet\.vm$' -and $_.Attribute -eq 'name' } |
-        Select-Object -ExpandProperty Value -First 1)
-    Add-DisplayValue -Label "Subnet" -Value $subnet
-
-    $publicIp = @($entries |
-        Where-Object { $_.Resource -match '^azurerm_public_ip\.vm$' -and $_.Attribute -eq 'name' } |
-        Select-Object -ExpandProperty Value -First 1)
-    Add-DisplayValue -Label "Public IP" -Value $publicIp
-
     if ($display.Count -eq 0) {
         foreach ($value in ($entries | Select-Object -ExpandProperty Value -Unique)) {
             Add-DisplayValue -Label "Value" -Value $value
