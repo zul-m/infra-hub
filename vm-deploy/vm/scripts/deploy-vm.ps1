@@ -300,12 +300,12 @@ function Get-TerraformDestroyedDisplayResources {
     }
 
     $rg = @($entries |
-        Where-Object { $_.Resource -match '^azurerm_resource_group\.main$' -and $_.Attribute -eq 'name' } |
+        Where-Object { $_.Resource -match '^azurerm_resource_group\.' -and $_.Attribute -eq 'name' } |
         Select-Object -ExpandProperty Value -First 1)
     Add-DisplayValue -Label "Resource group" -Value $rg
 
     $vmName = @($entries |
-        Where-Object { $_.Resource -match '^azurerm_windows_virtual_machine\.vm$' -and $_.Attribute -eq 'name' } |
+        Where-Object { $_.Resource -match '^azurerm_windows_virtual_machine\.' -and $_.Attribute -eq 'name' } |
         Select-Object -ExpandProperty Value -First 1)
     Add-DisplayValue -Label "VM" -Value $vmName
 
