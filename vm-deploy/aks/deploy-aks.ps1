@@ -237,6 +237,74 @@ function Write-TerraformSummary {
     Write-TerraformResourceList -Title "Destroyed" -Resources $Summary.DestroyedResources
 }
 
+function Get-TerraformDestroyTargets {
+    param(
+        [string]$StdOut,
+        [string]$StdErr
+    )
+
+    $combined = @($StdOut, $StdErr) -join "`n"
+    $entries = New-Object System.Collections.Generic.List[object]
+    $currentDestroyedResource = $null
+
+    foreach ($line in ($combined -split "`r?`n")) {
+        if ($line -match '^\s*#\s+(?<resource>\S+)\s+will be destroyed') {
+            $currentDestroyedResource = $matches.resource
+            continue
+        }
+
+        if ($line -match '^\s*#\s+') {
+            $currentDestroyedResource = $null
+            continue
+        }
+
+        if (-not $currentDestroyedResource) {
+            continue
+        }
+
+        if ($line -match '^\s*[-+~]?\s*(?<attr>name|resource_group_name|cluster_name|node_resource_group|vm_name|fqdn)\s*=\s*"(?<value>[^"]+)"') {
+            $entries.Add([pscustomobject]@{
+                Resource  = $currentDestroyedResource
+                Attribute = $matches.attr
+                Value     = $matches.value
+            })
+        }
+    }
+
+    $uniqueEntries = @($entries | Group-Object Resource, Attribute, Value | ForEach-Object { $_.Group[0] })
+    $uniqueValues = @($uniqueEntries | Select-Object -ExpandProperty Value -Unique)
+
+    return [pscustomobject]@{
+        Entries = $uniqueEntries
+        Values  = $uniqueValues
+    }
+}
+
+function Write-TerraformDestroyTargets {
+    param(
+        [pscustomobject]$Targets,
+        [int]$MaxItems = 12
+    )
+
+    if (-not $Targets -or -not $Targets.Entries) {
+        return
+    }
+
+    $entries = @($Targets.Entries | Where-Object { $_.Value } | Select-Object -First $MaxItems)
+    if ($entries.Count -eq 0) {
+        return
+    }
+
+    Write-Host "  Real values to destroy:" -ForegroundColor DarkGray
+    foreach ($entry in $entries) {
+        Write-Host ("    - {0}  [{1}.{2}]" -f $entry.Value, $entry.Resource, $entry.Attribute) -ForegroundColor Gray
+    }
+
+    if ($Targets.Entries.Count -gt $MaxItems) {
+        Write-Host ("    ... and {0} more" -f ($Targets.Entries.Count - $MaxItems)) -ForegroundColor Gray
+    }
+}
+
 function Redact-TerraformOutput {
     param(
         [string]$Text
@@ -759,6 +827,8 @@ try {
         Write-Host ""
         Write-Host "  Destroy preview summary:" -ForegroundColor Yellow
         Write-Host ("  Changes: +{0}  ~{1}  -{2}" -f $previewResult.Summary.AddedCount, $previewResult.Summary.ChangedCount, $previewResult.Summary.DestroyedCount) -ForegroundColor Yellow
+        $destroyTargets = Get-TerraformDestroyTargets -StdOut $previewResult.StdOut -StdErr $previewResult.StdErr
+        Write-TerraformDestroyTargets -Targets $destroyTargets -MaxItems 20
         Write-TerraformResourceList -Title "Resources to destroy" -Resources $previewResult.Summary.DestroyedResources -MaxItems 30
         if ($previewResult.Summary.DestroyedCount -eq 0) {
             Write-Host "  No resources are planned for destroy." -ForegroundColor DarkYellow
@@ -767,9 +837,13 @@ try {
         if ($ConfirmDestroy) {
             Write-Host "  Destroy confirmation override detected (-ConfirmDestroy)." -ForegroundColor DarkYellow
         } else {
+            $clusterNameFromPreview = @($destroyTargets.Entries |
+                Where-Object { $_.Resource -match '^azurerm_kubernetes_cluster\.' -and $_.Attribute -eq 'name' } |
+                Select-Object -ExpandProperty Value -First 1)
+            $displayClusterName = if ($clusterNameFromPreview) { $clusterNameFromPreview } else { $AksClusterName }
             $ok = $Host.UI.PromptForChoice(
                 "  Confirm AKS destroy",
-                "  This will DELETE AKS cluster '$AksClusterName' in resource group '$AksResourceGroup' and managed resources. Continue?",
+                "  This will DELETE AKS cluster '$displayClusterName' in resource group '$AksResourceGroup' and managed resources. Continue?",
                 @("&Yes", "&No"),
                 1
             )
@@ -788,6 +862,10 @@ try {
     }
 
     Write-TerraformSummary -Summary $actionResult.Summary
+    if ($Action -eq "destroy") {
+        $destroyedTargets = Get-TerraformDestroyTargets -StdOut $actionResult.StdOut -StdErr $actionResult.StdErr
+        Write-TerraformDestroyTargets -Targets $destroyedTargets -MaxItems 20
+    }
 
 } finally {
     Remove-Item Env:TF_VAR_windows_admin_password -ErrorAction SilentlyContinue
