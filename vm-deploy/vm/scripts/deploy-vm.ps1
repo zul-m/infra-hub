@@ -212,7 +212,8 @@ function Write-TerraformResourceList {
 
 function Write-TerraformSummary {
     param(
-        [pscustomobject]$Summary
+        [pscustomobject]$Summary,
+        [string[]]$DestroyedDisplayResources
     )
 
     Write-Host ""
@@ -222,7 +223,103 @@ function Write-TerraformSummary {
 
     Write-TerraformResourceList -Title "Provisioned" -Resources $Summary.CreatedResources
     Write-TerraformResourceList -Title "Updated" -Resources $Summary.ChangedResources
-    Write-TerraformResourceList -Title "Destroyed" -Resources $Summary.DestroyedResources
+    if ($Summary.Action -eq "destroy" -and $DestroyedDisplayResources) {
+        Write-TerraformResourceList -Title "Destroyed" -Resources $DestroyedDisplayResources
+    } else {
+        Write-TerraformResourceList -Title "Destroyed" -Resources $Summary.DestroyedResources
+    }
+}
+
+function Get-TerraformDestroyTargets {
+    param(
+        [string]$StdOut,
+        [string]$StdErr
+    )
+
+    $combined = @($StdOut, $StdErr) -join "`n"
+    $entries = New-Object System.Collections.Generic.List[object]
+    $currentDestroyedResource = $null
+
+    foreach ($line in ($combined -split "`r?`n")) {
+        if ($line -match '^\s*#\s+(?<resource>\S+)\s+will be destroyed') {
+            $currentDestroyedResource = $matches.resource
+            continue
+        }
+
+        if ($line -match '^\s*#\s+') {
+            $currentDestroyedResource = $null
+            continue
+        }
+
+        if (-not $currentDestroyedResource) {
+            continue
+        }
+
+        if ($line -match '^\s*[-+~]?\s*(?<attr>name|resource_group_name|cluster_name|node_resource_group|vm_name)\s*=\s*"(?<value>[^"]+)"') {
+            $entries.Add([pscustomobject]@{
+                Resource  = $currentDestroyedResource
+                Attribute = $matches.attr
+                Value     = $matches.value
+            })
+        }
+    }
+
+    $uniqueEntries = @($entries | Group-Object Resource, Attribute, Value | ForEach-Object { $_.Group[0] })
+    $uniqueValues = @($uniqueEntries | Select-Object -ExpandProperty Value -Unique)
+
+    return [pscustomobject]@{
+        Entries = $uniqueEntries
+        Values  = $uniqueValues
+    }
+}
+
+function Get-TerraformDestroyedDisplayResources {
+    param(
+        [pscustomobject]$Targets,
+        [string[]]$FallbackResources
+    )
+
+    if (-not $Targets -or -not $Targets.Entries) {
+        return @($FallbackResources | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    }
+
+    $entries = @($Targets.Entries | Where-Object { $_.Value })
+    $display = New-Object System.Collections.Generic.List[string]
+
+    function Add-DisplayValue {
+        param([string]$Label, [string]$Value)
+
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            return
+        }
+
+        $item = "{0}: {1}" -f $Label, $Value.Trim()
+        if (-not $display.Contains($item)) {
+            $display.Add($item)
+        }
+    }
+
+    $rg = @($entries |
+        Where-Object { $_.Resource -match '^azurerm_resource_group\.' -and $_.Attribute -eq 'name' } |
+        Select-Object -ExpandProperty Value -First 1)
+    Add-DisplayValue -Label "Resource group" -Value $rg
+
+    $vmName = @($entries |
+        Where-Object { $_.Resource -match '^azurerm_windows_virtual_machine\.' -and $_.Attribute -eq 'name' } |
+        Select-Object -ExpandProperty Value -First 1)
+    Add-DisplayValue -Label "VM" -Value $vmName
+
+    if ($display.Count -eq 0) {
+        foreach ($value in ($entries | Select-Object -ExpandProperty Value -Unique)) {
+            Add-DisplayValue -Label "Value" -Value $value
+        }
+    }
+
+    if ($display.Count -eq 0) {
+        return @($FallbackResources | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    }
+
+    return @($display)
 }
 
 function Get-LiveAnsibleTaskFromLog {
@@ -783,7 +880,9 @@ try {
         Write-Host ""
         Write-Host "  Destroy preview summary:" -ForegroundColor Yellow
         Write-Host ("  Changes: +{0}  ~{1}  -{2}" -f $previewResult.Summary.AddedCount, $previewResult.Summary.ChangedCount, $previewResult.Summary.DestroyedCount) -ForegroundColor Yellow
-        Write-TerraformResourceList -Title "Resources to destroy" -Resources $previewResult.Summary.DestroyedResources -MaxItems 30
+        $destroyTargets = Get-TerraformDestroyTargets -StdOut $previewResult.StdOut -StdErr $previewResult.StdErr
+        $previewDestroyedDisplay = Get-TerraformDestroyedDisplayResources -Targets $destroyTargets -FallbackResources $previewResult.Summary.DestroyedResources
+        Write-TerraformResourceList -Title "Destroyed" -Resources $previewDestroyedDisplay -MaxItems 30
         if ($previewResult.Summary.DestroyedCount -eq 0) {
             Write-Host "  No resources are planned for destroy." -ForegroundColor DarkYellow
         }
@@ -791,7 +890,12 @@ try {
         if ($ConfirmDestroy) {
             Write-Host "  Destroy confirmation override detected (-ConfirmDestroy)." -ForegroundColor DarkYellow
         } else {
-            $ok = $Host.UI.PromptForChoice("  Confirm destroy", "  This will DELETE all VM resources. Continue?", @("&Yes", "&No"), 1)
+            $vmNameFromPreview = @($destroyTargets.Entries |
+                Where-Object { $_.Resource -match '^azurerm_windows_virtual_machine\.' -and $_.Attribute -eq 'name' } |
+                Select-Object -ExpandProperty Value -First 1)
+            $displayVmName = if ($vmNameFromPreview) { $vmNameFromPreview } else { "(from state)" }
+            $confirmMessage = "  This will DELETE VM '$displayVmName' and resource group '$ResourceGroupName'. Continue?"
+            $ok = $Host.UI.PromptForChoice("  Confirm destroy", $confirmMessage, @("&Yes", "&No"), 1)
             if ($ok -ne 0) {
                 Write-Host "  Cancelled.`n"
                 throw [System.OperationCanceledException]::new("VM destroy cancelled by user.")
@@ -817,7 +921,12 @@ try {
         throw "terraform $Action exited with code $($actionResult.ExitCode)"
     }
 
-    Write-TerraformSummary -Summary $actionResult.Summary
+    $destroyedDisplayForSummary = $null
+    if ($Action -eq "destroy") {
+        $destroyedTargets = Get-TerraformDestroyTargets -StdOut $actionResult.StdOut -StdErr $actionResult.StdErr
+        $destroyedDisplayForSummary = Get-TerraformDestroyedDisplayResources -Targets $destroyedTargets -FallbackResources $actionResult.Summary.DestroyedResources
+    }
+    Write-TerraformSummary -Summary $actionResult.Summary -DestroyedDisplayResources $destroyedDisplayForSummary
 } finally {
     Pop-Location
 }
