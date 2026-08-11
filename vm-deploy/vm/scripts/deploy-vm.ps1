@@ -212,7 +212,8 @@ function Write-TerraformResourceList {
 
 function Write-TerraformSummary {
     param(
-        [pscustomobject]$Summary
+        [pscustomobject]$Summary,
+        [string[]]$DestroyedDisplayResources
     )
 
     Write-Host ""
@@ -222,7 +223,11 @@ function Write-TerraformSummary {
 
     Write-TerraformResourceList -Title "Provisioned" -Resources $Summary.CreatedResources
     Write-TerraformResourceList -Title "Updated" -Resources $Summary.ChangedResources
-    Write-TerraformResourceList -Title "Destroyed" -Resources $Summary.DestroyedResources
+    if ($Summary.Action -eq "destroy" -and $DestroyedDisplayResources) {
+        Write-TerraformResourceList -Title "Destroyed" -Resources $DestroyedDisplayResources
+    } else {
+        Write-TerraformResourceList -Title "Destroyed" -Resources $Summary.DestroyedResources
+    }
 }
 
 function Get-TerraformDestroyTargets {
@@ -268,29 +273,68 @@ function Get-TerraformDestroyTargets {
     }
 }
 
-function Write-TerraformDestroyTargets {
+function Get-TerraformDestroyedDisplayResources {
     param(
         [pscustomobject]$Targets,
-        [int]$MaxItems = 12
+        [string[]]$FallbackResources
     )
 
     if (-not $Targets -or -not $Targets.Entries) {
-        return
+        return @($FallbackResources | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
     }
 
-    $entries = @($Targets.Entries | Where-Object { $_.Value } | Select-Object -First $MaxItems)
-    if ($entries.Count -eq 0) {
-        return
+    $entries = @($Targets.Entries | Where-Object { $_.Value })
+    $display = New-Object System.Collections.Generic.List[string]
+
+    function Add-DisplayValue {
+        param([string]$Label, [string]$Value)
+
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            return
+        }
+
+        $item = "{0}: {1}" -f $Label, $Value.Trim()
+        if (-not $display.Contains($item)) {
+            $display.Add($item)
+        }
     }
 
-    Write-Host "  Real values to destroy:" -ForegroundColor DarkGray
-    foreach ($entry in $entries) {
-        Write-Host ("    - {0}  [{1}.{2}]" -f $entry.Value, $entry.Resource, $entry.Attribute) -ForegroundColor Gray
+    $rg = @($entries |
+        Where-Object { $_.Resource -match '^azurerm_resource_group\.main$' -and $_.Attribute -eq 'name' } |
+        Select-Object -ExpandProperty Value -First 1)
+    Add-DisplayValue -Label "Resource group" -Value $rg
+
+    $vmName = @($entries |
+        Where-Object { $_.Resource -match '^azurerm_windows_virtual_machine\.vm$' -and $_.Attribute -eq 'name' } |
+        Select-Object -ExpandProperty Value -First 1)
+    Add-DisplayValue -Label "VM" -Value $vmName
+
+    $vnet = @($entries |
+        Where-Object { $_.Resource -match '^azurerm_virtual_network\.main$' -and $_.Attribute -eq 'name' } |
+        Select-Object -ExpandProperty Value -First 1)
+    Add-DisplayValue -Label "VNet" -Value $vnet
+
+    $subnet = @($entries |
+        Where-Object { $_.Resource -match '^azurerm_subnet\.vm$' -and $_.Attribute -eq 'name' } |
+        Select-Object -ExpandProperty Value -First 1)
+    Add-DisplayValue -Label "Subnet" -Value $subnet
+
+    $publicIp = @($entries |
+        Where-Object { $_.Resource -match '^azurerm_public_ip\.vm$' -and $_.Attribute -eq 'name' } |
+        Select-Object -ExpandProperty Value -First 1)
+    Add-DisplayValue -Label "Public IP" -Value $publicIp
+
+    if ($display.Count -eq 0) {
+        foreach ($value in ($entries | Select-Object -ExpandProperty Value -Unique)) {
+            Add-DisplayValue -Label "Value" -Value $value
+        }
     }
 
-    if ($Targets.Entries.Count -gt $MaxItems) {
-        Write-Host ("    ... and {0} more" -f ($Targets.Entries.Count - $MaxItems)) -ForegroundColor Gray
+    if ($display.Count -eq 0) {
+        return @($FallbackResources | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
     }
+
+    return @($display)
 }
 
 function Get-LiveAnsibleTaskFromLog {
@@ -852,8 +896,8 @@ try {
         Write-Host "  Destroy preview summary:" -ForegroundColor Yellow
         Write-Host ("  Changes: +{0}  ~{1}  -{2}" -f $previewResult.Summary.AddedCount, $previewResult.Summary.ChangedCount, $previewResult.Summary.DestroyedCount) -ForegroundColor Yellow
         $destroyTargets = Get-TerraformDestroyTargets -StdOut $previewResult.StdOut -StdErr $previewResult.StdErr
-        Write-TerraformDestroyTargets -Targets $destroyTargets -MaxItems 20
-        Write-TerraformResourceList -Title "Resources to destroy" -Resources $previewResult.Summary.DestroyedResources -MaxItems 30
+        $previewDestroyedDisplay = Get-TerraformDestroyedDisplayResources -Targets $destroyTargets -FallbackResources $previewResult.Summary.DestroyedResources
+        Write-TerraformResourceList -Title "Destroyed" -Resources $previewDestroyedDisplay -MaxItems 30
         if ($previewResult.Summary.DestroyedCount -eq 0) {
             Write-Host "  No resources are planned for destroy." -ForegroundColor DarkYellow
         }
@@ -892,11 +936,12 @@ try {
         throw "terraform $Action exited with code $($actionResult.ExitCode)"
     }
 
-    Write-TerraformSummary -Summary $actionResult.Summary
+    $destroyedDisplayForSummary = $null
     if ($Action -eq "destroy") {
         $destroyedTargets = Get-TerraformDestroyTargets -StdOut $actionResult.StdOut -StdErr $actionResult.StdErr
-        Write-TerraformDestroyTargets -Targets $destroyedTargets -MaxItems 20
+        $destroyedDisplayForSummary = Get-TerraformDestroyedDisplayResources -Targets $destroyedTargets -FallbackResources $actionResult.Summary.DestroyedResources
     }
+    Write-TerraformSummary -Summary $actionResult.Summary -DestroyedDisplayResources $destroyedDisplayForSummary
 } finally {
     Pop-Location
 }
